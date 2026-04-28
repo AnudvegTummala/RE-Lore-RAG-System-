@@ -1,0 +1,57 @@
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+.Python
+
+# ── Node ───────────────────────────────────────────────────────────────────────
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# ── Environment ────────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+pipeline/.env
+
+# ── Data corpus (never commit raw scraped data or embeddings) ──────────────────
+data/raw/markdown/
+data/raw/images/
+data/processed/
+data/checkpoints/
+# Keep the manifests directory structure but not the files
+!data/raw/manifests/
+data/raw/manifests/*.json
+
+# ── Docker ─────────────────────────────────────────────────────────────────────
+.dockerignore
+
+# ── Editors ────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ─────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Logs ───────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Test / coverage ────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/

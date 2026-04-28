@@ -1,0 +1,35 @@
+services:
+  scraper:
+    build:
+      context: ./scraper
+      dockerfile: Dockerfile
+    volumes:
+      - ../data:/data
+    environment:
+      SCRAPE_TARGET: "${SCRAPE_TARGET:-all}"
+      RATE_LIMIT_DELAY: "${RATE_LIMIT_DELAY:-2.0}"
+      MAX_PAGES: "${MAX_PAGES:-500}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    networks:
+      - pipeline-net
+
+  ingestor:
+    build:
+      context: ./ingestor
+      dockerfile: Dockerfile
+    volumes:
+      - ../data:/data
+    environment:
+      NEO4J_URI: "${NEO4J_URI}"
+      NEO4J_USER: "${NEO4J_USER:-neo4j}"
+      NEO4J_PASSWORD: "${NEO4J_PASSWORD}"
+      QDRANT_URL: "${QDRANT_URL}"
+      CLIP_SERVICE_URL: "${CLIP_SERVICE_URL}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-all-MiniLM-L6-v2}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    networks:
+      - pipeline-net
+
+networks:
+  pipeline-net:
+    driver: bridge

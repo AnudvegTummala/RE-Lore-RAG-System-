@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lint-python:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff==0.6.9
+
+      - name: Lint runtime/api
+        run: ruff check runtime/api/app/
+
+      - name: Lint clip-service
+        run: ruff check runtime/clip-service/app/
+
+      - name: Lint pipeline/scraper
+        run: ruff check pipeline/scraper/app/
+
+      - name: Lint pipeline/ingestor
+        run: ruff check pipeline/ingestor/app/
+
+  typecheck-frontend:
+    name: Typecheck Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: runtime/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: runtime/frontend
+        run: npm ci
+
+      - name: Type check
+        working-directory: runtime/frontend
+        run: npx tsc --noEmit
+
+  test-python:
+    name: Python Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime/api deps
+        working-directory: runtime/api
+        run: pip install -r requirements.txt pytest pytest-asyncio
+
+      - name: Run tests
+        working-directory: runtime/api
+        run: pytest tests/ -v --tb=short
+        continue-on-error: true  # tests directory scaffolded in later phases
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build runtime images
+        run: docker compose build --parallel
+
+      - name: Build pipeline images
+        working-directory: pipeline
+        run: docker compose build --parallel
