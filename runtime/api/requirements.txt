@@ -1,9 +1,10 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
-langgraph>=0.2
-langchain-core>=0.2
-langchain-groq>=0.1
-langchain-community>=0.2
+langgraph==1.0.1
+langchain-core==0.3.84
+langchain-groq==0.3.8
+langchain-community==0.3.27
+langsmith==0.7.37
 neo4j==5.21.0
 qdrant-client==1.11.0
 sentence-transformers==3.1.1
