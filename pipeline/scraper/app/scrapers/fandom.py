@@ -273,29 +273,33 @@ class FandomScraper(BaseScraper):
     # Article fetching and parsing
     # ------------------------------------------------------------------
 
-    async def _fetch_article_html(self, client: httpx.AsyncClient, url: str) -> str | None:
-        """Fetch article HTML via api.php?action=parse to bypass Cloudflare.
+    async def _fetch_article_html(
+        self, client: httpx.AsyncClient, url: str
+    ) -> tuple[str, str] | tuple[None, None]:
+        """Fetch article HTML and plain title via api.php?action=parse.
 
-        The rendered HTML returned by the parse API is identical to what the
-        browser receives — infoboxes, body content, categories all present.
-        The canonical wiki URL is preserved as source_url in frontmatter.
+        Returns (html, title) on success, (None, None) on failure.
+        The parse API is not protected by Cloudflare's JS challenge.
+        The canonical wiki URL is still stored as source_url in frontmatter.
         """
-        # Extract page title from URL: last path segment, URL-decoded.
         page_title = urllib.parse.unquote(url.split("/wiki/")[-1])
         params = {
             "action": "parse",
             "page": page_title,
-            "prop": "text",
+            "prop": "text|displaytitle",
             "format": "json",
             "formatversion": "2",
         }
         data = await self._api_get(client, params)
         if not data:
-            return None
+            return None, None
         if "error" in data:
             logger.warning("API parse error for %s: %s", url, data["error"].get("info"))
-            return None
-        return data.get("parse", {}).get("text")
+            return None, None
+        parse = data.get("parse", {})
+        html = parse.get("text")
+        title = parse.get("title") or page_title.replace("_", " ")
+        return html, title
 
     async def _scrape_article(
         self,
@@ -306,7 +310,7 @@ class FandomScraper(BaseScraper):
         folder: str,
     ) -> None:
         try:
-            html = await self._fetch_article_html(client, url)
+            html, api_title = await self._fetch_article_html(client, url)
             if not html:
                 self._registry.record(url, None)
                 self._scrape_manifest.record_page(category_key, success=False)
@@ -314,7 +318,7 @@ class FandomScraper(BaseScraper):
 
             soup = BeautifulSoup(html, "lxml")
             parser = _PARSERS[entity_type]
-            parsed = parser(soup, url)
+            parsed = parser(soup, url, api_title=api_title)
 
             output_path = self._writer.write(
                 folder,
