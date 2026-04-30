@@ -8,8 +8,16 @@ from app.utils.rate_limit import RateLimiter
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "Mozilla/5.0 (compatible; RE-Lore-Oracle-Research-Bot/1.0)"
-DEFAULT_HEADERS = {"User-Agent": USER_AGENT}
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+DEFAULT_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
 
 MAX_CONCURRENT_REQUESTS = 5
 MAX_RETRIES = 5

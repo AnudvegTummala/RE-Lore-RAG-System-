@@ -259,7 +259,11 @@ class FandomScraper(BaseScraper):
             return []
 
         urls: list[str] = []
-        for page in data.get("query", {}).get("pages", {}).values():
+        pages = data.get("query", {}).get("pages", [])
+        # formatversion=2 returns pages as a list; formatversion=1 returns a dict
+        if isinstance(pages, dict):
+            pages = pages.values()
+        for page in pages:
             full_url = page.get("fullurl")
             if full_url:
                 urls.append(full_url)
