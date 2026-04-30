@@ -1,21 +1,27 @@
 """Fandom (Resident Evil Wiki) scraper.
 
-For each configured category we walk the entire category listing (following
-``category-page__pagination-next`` links until exhausted), then fetch each
-linked article page, parse it via the matching category parser, and write a
-markdown file with YAML frontmatter. Image references collected during
-parsing are registered with the shared ``ImageManifest`` so the downstream
-image downloader can fetch them.
+URL discovery uses the MediaWiki API (api.php) rather than HTML category
+pages, which avoids Cloudflare challenges on the rendered pages. For each
+configured category the scraper:
+
+  1. Calls the categorymembers API recursively (BFS, depth ≤ 5) to collect
+     every article pageid in the category tree, then converts pageids to
+     full wiki URLs in a single titles lookup.
+  2. Fetches each article page as HTML, parses it via the matching category
+     parser, and writes a markdown file with YAML frontmatter.
+  3. Registers image references with the shared ImageManifest.
 
 Concurrency is bounded by the shared ``Semaphore(5)`` in ``BaseScraper``;
-the rate limiter additionally enforces a 1.5-3.0s per-domain gap. The
+the rate limiter additionally enforces a 1.5-3.0 s per-domain gap. The
 checkpoint is consulted to skip already-scraped URLs and is auto-flushed
 every 10 successful pages.
 """
 
 import asyncio
+import json
 import logging
-from urllib.parse import urljoin
+import urllib.parse
+from collections import deque
 
 import httpx
 from bs4 import BeautifulSoup
@@ -37,16 +43,21 @@ from app.utils.markdown_writer import MarkdownWriter
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://residentevil.fandom.com"
+_API_URL = f"{_BASE_URL}/api.php"
 
-# (category_key) -> (fandom path, entity_type, output folder)
+# Max subcategory recursion depth during BFS URL discovery.
+_MAX_SUBCAT_DEPTH = 5
+
+# (category_key) -> (fandom category name, entity_type, output folder)
+# Category names verified against the live wiki's Category:Lore_by_type tree.
 _CATEGORIES: dict[str, tuple[str, str, str]] = {
-    "characters":    ("/wiki/Category:Characters",             "character",    "characters"),
-    "games":         ("/wiki/Category:Games",                  "game",         "games"),
-    "enemies":       ("/wiki/Category:Enemies",                "enemy",        "enemies"),
-    "locations":     ("/wiki/Category:Locations",              "location",     "locations"),
-    "organizations": ("/wiki/Category:Organizations",          "organization", "organizations"),
-    "viruses":       ("/wiki/Category:Viruses_and_Parasites",  "virus",        "viruses"),
-    "weapons":       ("/wiki/Category:Weapons",                "weapon",       "weapons"),
+    "characters":    ("Characters",       "character",    "characters"),
+    "games":         ("Games",            "game",         "games"),
+    "enemies":       ("Creatures",        "enemy",        "enemies"),
+    "locations":     ("Locations",        "location",     "locations"),
+    "organizations": ("Organisations",    "organization", "organizations"),
+    "viruses":       ("Biological_agents","virus",        "viruses"),
+    "weapons":       ("Equipment",        "weapon",       "weapons"),
 }
 
 _PARSERS = {
@@ -88,12 +99,12 @@ class FandomScraper(BaseScraper):
             categories = {target: _CATEGORIES[target]}
 
         async with self.build_client() as client:
-            for cat_key, (path, entity_type, folder) in categories.items():
+            for cat_key, (cat_name, entity_type, folder) in categories.items():
                 if self._budget_remaining() <= 0:
                     logger.info("Page budget exhausted; stopping at category=%s", cat_key)
                     break
                 logger.info("Scraping category: %s", cat_key)
-                await self._scrape_category(client, cat_key, path, entity_type, folder)
+                await self._scrape_category(client, cat_key, cat_name, entity_type, folder)
 
         self._checkpoint.save()
         logger.info(
@@ -110,12 +121,11 @@ class FandomScraper(BaseScraper):
         self,
         client: httpx.AsyncClient,
         category_key: str,
-        path: str,
+        category_name: str,
         entity_type: str,
         folder: str,
     ) -> None:
-        category_url = urljoin(_BASE_URL, path)
-        article_urls = await self._collect_article_urls(client, category_url)
+        article_urls = await self._collect_article_urls(client, category_name)
         logger.info("  category=%s discovered=%d urls", category_key, len(article_urls))
 
         pending = [u for u in article_urls if not self._checkpoint.is_done(u)]
@@ -139,43 +149,125 @@ class FandomScraper(BaseScraper):
             return
         await asyncio.gather(*tasks, return_exceptions=False)
 
+    # ------------------------------------------------------------------
+    # MediaWiki API — URL discovery
+    # ------------------------------------------------------------------
+
+    async def _api_get(self, client: httpx.AsyncClient, params: dict) -> dict | None:
+        """GET the Fandom MediaWiki API and return parsed JSON, or None on failure."""
+        params.setdefault("format", "json")
+        params.setdefault("formatversion", "2")
+        url = _API_URL + "?" + urllib.parse.urlencode(params)
+        text = await self.fetch(client, url)
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            logger.warning("JSON decode failed for API call: %s", url)
+            return None
+
     async def _collect_article_urls(
         self,
         client: httpx.AsyncClient,
-        category_url: str,
+        category_name: str,
     ) -> list[str]:
+        """BFS through the category tree via the MediaWiki API.
+
+        Collects all article pageids (namespace 0) under the given category,
+        recursing into subcategories up to _MAX_SUBCAT_DEPTH levels deep.
+        Returns full wiki URLs for each article.
+        """
+        page_ids: set[int] = set()
+        visited_cats: set[str] = set()
+
+        # Queue entries: (category_name, depth)
+        queue: deque[tuple[str, int]] = deque()
+        queue.append((f"Category:{category_name}", 0))
+        visited_cats.add(f"Category:{category_name}")
+
+        while queue:
+            cat_title, depth = queue.popleft()
+            cm_continue: str | None = None
+
+            while True:
+                params: dict = {
+                    "action": "query",
+                    "list": "categorymembers",
+                    "cmtitle": cat_title,
+                    "cmlimit": "500",
+                    "cmtype": "page|subcat",
+                    "cmnamespace": "0|14",
+                }
+                if cm_continue:
+                    params["cmcontinue"] = cm_continue
+
+                data = await self._api_get(client, params)
+                if not data:
+                    break
+
+                members = data.get("query", {}).get("categorymembers", [])
+                for member in members:
+                    ns = member.get("ns", -1)
+                    title = member.get("title", "")
+                    pageid = member.get("pageid")
+
+                    if ns == 0 and pageid:
+                        page_ids.add(pageid)
+                    elif ns == 14 and depth < _MAX_SUBCAT_DEPTH:
+                        if title not in visited_cats:
+                            visited_cats.add(title)
+                            queue.append((title, depth + 1))
+
+                cont = data.get("continue", {})
+                cm_continue = cont.get("cmcontinue")
+                if not cm_continue:
+                    break
+
+        if not page_ids:
+            logger.warning("No articles found under Category:%s", category_name)
+            return []
+
+        # Convert pageids to URLs in batches of 50 (API limit for prop=info).
         urls: list[str] = []
-        seen: set[str] = set()
-        next_url: str | None = category_url
-        page_no = 0
-        while next_url:
-            page_no += 1
-            html = await self.fetch(client, next_url)
-            self._registry.record(next_url, 200 if html else None)
-            if not html:
-                logger.warning("Could not fetch category listing %s", next_url)
-                break
-            soup = BeautifulSoup(html, "lxml")
+        id_list = list(page_ids)
+        for i in range(0, len(id_list), 50):
+            batch = id_list[i : i + 50]
+            batch_urls = await self._pageids_to_urls(client, batch)
+            urls.extend(batch_urls)
 
-            for a in soup.select("a.category-page__member-link"):
-                href = a.get("href")
-                if not href:
-                    continue
-                if href.startswith("/wiki/Category:"):
-                    continue  # subcategory
-                full = urljoin(_BASE_URL, href)
-                if full in seen:
-                    continue
-                seen.add(full)
-                urls.append(full)
-
-            nxt = soup.select_one("a.category-page__pagination-next")
-            href = nxt.get("href") if nxt else None
-            next_url = urljoin(_BASE_URL, href) if href else None
-            if page_no > 200:
-                logger.warning("Pagination guard tripped at %d pages for %s", page_no, category_url)
-                break
+        logger.debug(
+            "Category:%s — visited %d subcategories, resolved %d article URLs",
+            category_name, len(visited_cats), len(urls),
+        )
         return urls
+
+    async def _pageids_to_urls(
+        self,
+        client: httpx.AsyncClient,
+        page_ids: list[int],
+    ) -> list[str]:
+        """Resolve a batch of pageids to full wiki URLs via prop=info."""
+        params = {
+            "action": "query",
+            "prop": "info",
+            "pageids": "|".join(str(pid) for pid in page_ids),
+            "inprop": "url",
+        }
+        data = await self._api_get(client, params)
+        if not data:
+            return []
+
+        urls: list[str] = []
+        for page in data.get("query", {}).get("pages", {}).values():
+            full_url = page.get("fullurl")
+            if full_url:
+                urls.append(full_url)
+        return urls
+
+    # ------------------------------------------------------------------
+    # Article fetching and parsing
+    # ------------------------------------------------------------------
 
     async def _scrape_article(
         self,
