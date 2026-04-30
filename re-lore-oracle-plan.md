@@ -349,9 +349,11 @@ Payload fields: `entity_id`, `entity_type`, `source_file`, `source_url`, `sectio
 
 ### `concept_art`
 
-CLIP embeddings of images.
+CLIP embeddings of images sourced from `image_manifest.json` (only entries with a `local_path`).
 
-Payload fields: `entity_id`, `entity_type`, `image_path`, `caption`, `tags`
+Payload fields: `image_id`, `entity_id`, `entity_type`, `image_path`, `caption` (alt_text from manifest), `tags`
+
+Both `lore_text` and `concept_art` have a Qdrant payload index on `entity_id` (keyword type) for efficient filtered search during graph-anchored retrieval.
 
 ---
 
@@ -480,14 +482,14 @@ Deliverable: Clean repo scaffold with working container skeleton.
 
 ### Phase 2 — Scraper Pipeline (Dev 2)
 
-- Build async scraper base class with retry and rate limiting
-- Implement Resident Evil wiki (Fandom) scraper
-- Implement Wikipedia supplementary scraper
-- Implement image downloader
-- Normalize page titles into slugs
-- Convert page content to markdown with YAML frontmatter
-- Write manifest files and checkpoint support
-- Validate corpus quality on a small subset first
+- Build async scraper base class with global `Semaphore(5)`, per-domain rate limiter (1.5–3.0 s gap), exponential backoff on 429/403/503; user-agent is a full Chrome UA string to pass Cloudflare checks
+- URL discovery via MediaWiki API (`api.php?list=categorymembers`) with BFS subcategory traversal (depth ≤ 5) — avoids Cloudflare-blocked category HTML pages; category names corrected to match live wiki (`Creatures`, `Organisations`, `Biological_agents`, `Equipment`)
+- Implement Resident Evil wiki (Fandom) scraper with shared `ImageManifest`, `SourceRegistry`, `ScrapeManifest`
+- Implement Wikipedia supplementary scraper (appends `## Wikipedia Summary` to game files)
+- Implement image downloader with Pillow dimension validation (skip < 100×100)
+- Normalize page titles into slugs; convert page content to markdown with YAML frontmatter
+- Atomic checkpoint writes (`.tmp` rename); auto-flush every 10 completions
+- Scraper container uses `network_mode: host` so Cloudflare sees residential IP over HTTP/2
 
 Deliverable: `data/raw/markdown/` corpus and `data/raw/images/` image corpus.
 
