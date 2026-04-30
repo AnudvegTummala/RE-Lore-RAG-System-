@@ -6,3 +6,4 @@ pyyaml==6.0.2
 tqdm==4.66.5
 aiofiles==24.1.0
 python-slugify==8.0.4
+Pillow==10.4.0
