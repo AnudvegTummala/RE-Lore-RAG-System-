@@ -273,6 +273,30 @@ class FandomScraper(BaseScraper):
     # Article fetching and parsing
     # ------------------------------------------------------------------
 
+    async def _fetch_article_html(self, client: httpx.AsyncClient, url: str) -> str | None:
+        """Fetch article HTML via api.php?action=parse to bypass Cloudflare.
+
+        The rendered HTML returned by the parse API is identical to what the
+        browser receives — infoboxes, body content, categories all present.
+        The canonical wiki URL is preserved as source_url in frontmatter.
+        """
+        # Extract page title from URL: last path segment, URL-decoded.
+        page_title = urllib.parse.unquote(url.split("/wiki/")[-1])
+        params = {
+            "action": "parse",
+            "page": page_title,
+            "prop": "text",
+            "format": "json",
+            "formatversion": "2",
+        }
+        data = await self._api_get(client, params)
+        if not data:
+            return None
+        if "error" in data:
+            logger.warning("API parse error for %s: %s", url, data["error"].get("info"))
+            return None
+        return data.get("parse", {}).get("text")
+
     async def _scrape_article(
         self,
         client: httpx.AsyncClient,
@@ -282,7 +306,7 @@ class FandomScraper(BaseScraper):
         folder: str,
     ) -> None:
         try:
-            html = await self.fetch(client, url)
+            html = await self._fetch_article_html(client, url)
             if not html:
                 self._registry.record(url, None)
                 self._scrape_manifest.record_page(category_key, success=False)
