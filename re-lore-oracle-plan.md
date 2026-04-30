@@ -339,9 +339,13 @@ The FastAPI `/query` router calls `compiled_graph.astream_events(initial_state, 
 
 ### `lore_text`
 
-Sentence-transformer embeddings of markdown chunks.
+Sentence-transformer embeddings of markdown chunks using a **parent-child hierarchical strategy with contextual prefixing**:
 
-Payload fields: `entity_id`, `entity_type`, `source_file`, `source_url`, `section`, `tags`
+- **Child chunks** (≤ 400 chars) are what gets embedded and indexed in Qdrant — small enough for precise retrieval.
+- **Parent chunks** (full section, ≤ 1500 chars) are stored in the Qdrant payload alongside the child — this is what gets sent to the LLM as context.
+- Every chunk is prefixed with `"{title} — {section_name}: "` before embedding so vectors carry entity context even when the chunk is read in isolation (contextual retrieval).
+
+Payload fields: `entity_id`, `entity_type`, `source_file`, `source_url`, `section`, `tags`, `chunk_text` (child, embedded), `parent_text` (full section, returned to LLM)
 
 ### `concept_art`
 
@@ -399,16 +403,23 @@ data/raw/markdown/
 
 ### Chunk Metadata
 
+Parent-child chunking with contextual prefixing. Each Qdrant point represents one child chunk:
+
 ```json
 {
   "chunk_id": "leon-s-kennedy_biography_001",
   "entity_id": "character-leon-s-kennedy",
+  "entity_type": "character",
   "section": "Biography",
   "source_file": "data/raw/markdown/characters/leon-s-kennedy.md",
   "source_url": "https://example.com/leon",
-  "text": "..."
+  "tags": ["protagonist", "rpd"],
+  "chunk_text": "Leon S. Kennedy — Biography: Leon was recruited by...",
+  "parent_text": "Leon S. Kennedy — Biography: Leon was recruited by the RPD after graduating... [full section up to 1500 chars]"
 }
 ```
+
+The vector stored in Qdrant is the embedding of `chunk_text` (child, ≤ 400 chars with prefix). The `parent_text` field is retrieved at query time and passed to the LLM — giving precise retrieval with full-context generation.
 
 ---
 
@@ -483,13 +494,12 @@ Deliverable: `data/raw/markdown/` corpus and `data/raw/images/` image corpus.
 ### Phase 3 — Ingestor Pipeline (Dev 2)
 
 - Implement markdown loader and frontmatter parser
-- Build chunking logic by heading and paragraph
-- Implement entity extraction helpers
-- Define Neo4j schema, constraints, and indexes
-- Build graph node and relationship creation logic
-- Generate text embeddings and load into `lore_text` Qdrant collection
-- Generate CLIP image embeddings and load into `concept_art` Qdrant collection
-- Add idempotent ingest behavior and produce ingest summary logs
+- Build hierarchical chunker: split by heading into parent sections (≤ 1500 chars), sub-split into child chunks (≤ 400 chars) by sentence boundary; prefix every chunk with `"{title} — {section}: "` for contextual retrieval
+- Define Neo4j schema, constraints, and indexes (one index per node label)
+- Build graph node loader (pass 1) and relationship builder (pass 2); relationship builder is lenient — creates stub nodes for referenced entities not yet in the graph so future scrape runs can fill them in
+- Generate text embeddings with `all-MiniLM-L6-v2` (dim=384); store child chunk as the embedded vector, parent section text in payload; run model in thread executor to avoid blocking the event loop
+- Generate CLIP image embeddings via HTTP calls to clip-service (dim=512); skip images without a `local_path` in image_manifest
+- All steps idempotent via checkpoint; produce summary log at completion
 
 Deliverable: Populated Neo4j and Qdrant volumes ready for runtime.
 
