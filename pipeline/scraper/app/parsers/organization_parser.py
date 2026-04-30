@@ -7,5 +7,7 @@ def parse_organization(
     soup: BeautifulSoup,
     source_url: str,
     scraped_at: str | None = None,
+    *,
+    api_title: str | None = None,
 ) -> dict:
-    return parse_entity_page(soup, source_url, "organization", scraped_at=scraped_at)
+    return parse_entity_page(soup, source_url, "organization", scraped_at=scraped_at, api_title=api_title)
