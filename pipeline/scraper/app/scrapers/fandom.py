@@ -100,16 +100,13 @@ class FandomScraper(BaseScraper):
 
         async with self.build_client() as client:
             for cat_key, (cat_name, entity_type, folder) in categories.items():
-                if self._budget_remaining() <= 0:
-                    logger.info("Page budget exhausted; stopping at category=%s", cat_key)
-                    break
+                self._page_count = 0  # reset budget per category
                 logger.info("Scraping category: %s", cat_key)
                 await self._scrape_category(client, cat_key, cat_name, entity_type, folder)
 
         self._checkpoint.save()
         logger.info(
-            "FandomScraper done. Pages this run: %d. Total in checkpoint: %d. Counts: %s",
-            self._page_count,
+            "FandomScraper done. Total in checkpoint: %d. Counts: %s",
             self._checkpoint.total,
             self._checkpoint.counts,
         )
