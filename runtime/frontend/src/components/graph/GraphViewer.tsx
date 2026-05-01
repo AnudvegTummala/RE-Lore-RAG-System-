@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import cytoscape from 'cytoscape'
 import { useGraph } from '../../hooks/useGraph'
 import NodeDetails from './NodeDetails'
@@ -18,6 +18,13 @@ export default function GraphViewer() {
   const cyRef = useRef<cytoscape.Core | null>(null)
   const { activeGraph, selectedNode, setSelectedNode } = useGraph()
 
+  // Stable callback so it never triggers Cytoscape re-init
+  const handleNodeTap = useCallback(
+    (evt: cytoscape.EventObject) => setSelectedNode(evt.target.id()),
+    [setSelectedNode],
+  )
+
+  // Init Cytoscape once — no reactive deps
   useEffect(() => {
     if (!containerRef.current) return
 
@@ -56,20 +63,19 @@ export default function GraphViewer() {
       layout: { name: 'cose' },
     })
 
-    cyRef.current.on('tap', 'node', (evt) => {
-      setSelectedNode(evt.target.id())
-    })
+    cyRef.current.on('tap', 'node', handleNodeTap)
 
     return () => {
       cyRef.current?.destroy()
     }
-  }, [setSelectedNode])
+  }, [handleNodeTap]) // handleNodeTap is stable — this runs once
 
+  // Update graph data whenever activeGraph changes
   useEffect(() => {
     if (!cyRef.current || !activeGraph) return
     cyRef.current.elements().remove()
     cyRef.current.add([
-      ...activeGraph.nodes.map((n) => ({ data: { id: n.id, ...n } })),
+      ...activeGraph.nodes.map((n) => ({ data: { ...n, id: n.id } })),
       ...activeGraph.edges.map((e, i) => ({
         data: { id: `e${i}`, source: e.source, target: e.target, type: e.type },
       })),
@@ -82,7 +88,13 @@ export default function GraphViewer() {
       <div className="p-3 border-b border-re-border">
         <p className="text-xs text-re-muted font-mono uppercase tracking-wider">Knowledge Graph</p>
       </div>
-      <div ref={containerRef} className="flex-1 bg-re-dark" />
+      {activeGraph ? (
+        <div ref={containerRef} className="flex-1 bg-re-dark" />
+      ) : (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-re-muted text-xs font-mono">Graph appears after first query</p>
+        </div>
+      )}
       <GraphLegend />
       {selectedNode && <NodeDetails nodeId={selectedNode} />}
     </div>

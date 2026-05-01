@@ -1,4 +1,4 @@
-import type { StreamToken, GraphPayload, GraphNode, GraphEdge } from '../types'
+import type { StreamToken, GraphNode, GraphEdge } from '../types'
 
 const BASE = '/api'
 
