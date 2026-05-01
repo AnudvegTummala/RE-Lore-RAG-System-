@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 from app.parsers.common import parse_entity_page
 
 
-def parse_character(
+def parse_weapon(
     soup: BeautifulSoup,
     source_url: str,
     scraped_at: str | None = None,
@@ -11,4 +11,4 @@ def parse_character(
     api_title: str | None = None,
     api_categories: list[str] | None = None,
 ) -> dict:
-    return parse_entity_page(soup, source_url, "character", scraped_at=scraped_at, api_title=api_title, api_categories=api_categories)
+    return parse_entity_page(soup, source_url, "weapon", scraped_at=scraped_at, api_title=api_title, api_categories=api_categories)
