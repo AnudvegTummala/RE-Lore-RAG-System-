@@ -283,20 +283,26 @@ class FandomScraper(BaseScraper):
         params = {
             "action": "parse",
             "page": page_title,
-            "prop": "text|displaytitle",
+            "prop": "text|displaytitle|categories",
             "format": "json",
             "formatversion": "2",
         }
         data = await self._api_get(client, params)
         if not data:
-            return None, None
+            return None, None, []
         if "error" in data:
             logger.warning("API parse error for %s: %s", url, data["error"].get("info"))
-            return None, None
+            return None, None, []
         parse = data.get("parse", {})
         html = parse.get("text")
         title = parse.get("title") or page_title.replace("_", " ")
-        return html, title
+        raw_cats = parse.get("categories", [])
+        categories = [
+            c.get("category", "").replace("_", " ")
+            for c in raw_cats
+            if not c.get("hidden")
+        ]
+        return html, title, categories
 
     async def _scrape_article(
         self,
@@ -307,7 +313,7 @@ class FandomScraper(BaseScraper):
         folder: str,
     ) -> None:
         try:
-            html, api_title = await self._fetch_article_html(client, url)
+            html, api_title, api_categories = await self._fetch_article_html(client, url)
             if not html:
                 self._registry.record(url, None)
                 self._scrape_manifest.record_page(category_key, success=False)
@@ -315,7 +321,7 @@ class FandomScraper(BaseScraper):
 
             soup = BeautifulSoup(html, "lxml")
             parser = _PARSERS[entity_type]
-            parsed = parser(soup, url, api_title=api_title)
+            parsed = parser(soup, url, api_title=api_title, api_categories=api_categories)
 
             output_path = self._writer.write(
                 folder,

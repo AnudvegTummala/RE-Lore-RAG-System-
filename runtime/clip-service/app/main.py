@@ -3,7 +3,7 @@ import os
 
 import open_clip
 import torch
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from PIL import Image
 from pydantic import BaseModel
 
@@ -36,8 +36,9 @@ async def embed_text(body: TextRequest):
 
 
 @app.post("/embed/image")
-async def embed_image(image_bytes: bytes):
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+async def embed_image(image_bytes: UploadFile = File(...)):
+    data = await image_bytes.read()
+    image = Image.open(io.BytesIO(data)).convert("RGB")
     tensor = _preprocess(image).unsqueeze(0)
     with torch.no_grad():
         vector = _model.encode_image(tensor)
