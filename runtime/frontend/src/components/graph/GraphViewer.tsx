@@ -18,29 +18,33 @@ export default function GraphViewer() {
   const cyRef = useRef<cytoscape.Core | null>(null)
   const { activeGraph, selectedNode, setSelectedNode } = useGraph()
 
+  // Initialise Cytoscape once the container div is in the DOM.
   useEffect(() => {
     if (!containerRef.current) return
 
     cyRef.current = cytoscape({
       container: containerRef.current,
+      elements: [],
       style: [
         {
           selector: 'node',
           style: {
             'background-color': (ele) =>
-              ENTITY_COLORS[ele.data('labels')?.[0]] ?? '#444',
+              ENTITY_COLORS[ele.data('labels')?.[0]] ?? '#555',
             label: 'data(name)',
             color: '#d4d4d4',
             'font-size': 10,
             'text-valign': 'bottom',
             'text-margin-y': 4,
+            width: 28,
+            height: 28,
           },
         },
         {
           selector: 'edge',
           style: {
-            'line-color': '#2a2a2a',
-            'target-arrow-color': '#2a2a2a',
+            'line-color': '#3a3a3a',
+            'target-arrow-color': '#3a3a3a',
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             label: 'data(type)',
@@ -53,7 +57,6 @@ export default function GraphViewer() {
           style: { 'border-color': '#CC0000', 'border-width': 2 },
         },
       ],
-      layout: { name: 'cose' },
     })
 
     cyRef.current.on('tap', 'node', (evt) => {
@@ -62,27 +65,47 @@ export default function GraphViewer() {
 
     return () => {
       cyRef.current?.destroy()
+      cyRef.current = null
     }
   }, [setSelectedNode])
 
+  // Re-render whenever activeGraph changes.
   useEffect(() => {
-    if (!cyRef.current || !activeGraph) return
-    cyRef.current.elements().remove()
-    cyRef.current.add([
+    const cy = cyRef.current
+    if (!cy || !activeGraph || activeGraph.nodes.length === 0) return
+
+    // Force Cytoscape to recalculate container dimensions (flex-1 may have
+    // resolved to 0px at init time if the parent flex layout wasn't settled).
+    cy.resize()
+    cy.elements().remove()
+
+    cy.add([
       ...activeGraph.nodes.map((n) => ({ data: { id: n.id, ...n } })),
       ...activeGraph.edges.map((e, i) => ({
         data: { id: `e${i}`, source: e.source, target: e.target, type: e.type },
       })),
     ])
-    cyRef.current.layout({ name: 'cose' }).run()
+
+    // Run layout then fit the viewport to the new elements.
+    const layout = cy.layout({
+      name: 'cose',
+      animate: false,       // skip animation so fit() sees final positions
+      randomize: true,
+      fit: true,            // cose will fit after completion
+      padding: 24,
+    })
+    layout.on('layoutstop', () => {
+      cy.fit(undefined, 24)
+    })
+    layout.run()
   }, [activeGraph])
 
   return (
     <div className="flex flex-col h-full">
-      <div className="p-3 border-b border-re-border">
+      <div className="p-3 border-b border-re-border shrink-0">
         <p className="text-xs text-re-muted font-mono uppercase tracking-wider">Knowledge Graph</p>
       </div>
-      <div ref={containerRef} className="flex-1 bg-re-dark" />
+      <div ref={containerRef} className="flex-1 min-h-0 bg-re-dark" />
       <GraphLegend />
       {selectedNode && <NodeDetails nodeId={selectedNode} />}
     </div>
