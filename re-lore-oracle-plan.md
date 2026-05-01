@@ -137,13 +137,18 @@ re-lore-oracle/
 │   │       │   ├── wikipedia.py
 │   │       │   └── images.py
 │   │       ├── parsers/
+│   │       │   ├── common.py           ← shared parse_entity_page logic
 │   │       │   ├── character_parser.py
 │   │       │   ├── game_parser.py
 │   │       │   ├── enemy_parser.py
-│   │       │   └── location_parser.py
+│   │       │   ├── location_parser.py
+│   │       │   ├── organization_parser.py
+│   │       │   ├── virus_parser.py
+│   │       │   └── weapon_parser.py
 │   │       └── utils/
 │   │           ├── checkpoint.py
 │   │           ├── cleaner.py
+│   │           ├── manifests.py        ← ImageManifest, SourceRegistry, ScrapeManifest
 │   │           ├── markdown_writer.py
 │   │           └── rate_limit.py
 │   └── ingestor/
@@ -198,6 +203,27 @@ re-lore-oracle/
     ├── reset-db.sh
     └── export-snapshots.sh
 ```
+
+---
+
+## Implementation Decisions & Deviations from Original Plan
+
+### Scraper
+
+- **Fandom fetch strategy changed**: Original plan used direct HTML page fetches. Cloudflare blocks HTTP/1.1 requests from datacenter IPs (including Docker containers). Switched to `api.php?action=parse` which is not protected by Cloudflare JS challenge. The canonical wiki URL is still stored as `source_url` in frontmatter.
+- **URL discovery via categorymembers API**: Category listing pages (`/wiki/Category:Characters`) are also Cloudflare-protected. Switched to `api.php?action=query&list=categorymembers` with recursive BFS for subcategories.
+- **Categories (tags) from API**: `api.php?action=parse` response does not include the page header HTML where category links live. Added `prop=categories` to pull non-hidden categories directly from the API response.
+- **7 parsers, not 4**: Added `organization_parser`, `virus_parser`, `weapon_parser` (plan only listed 4). All 7 delegate to a shared `parsers/common.py` (`parse_entity_page`).
+- **3 manifest files**: `image_manifest.json` (flat dict, image_id → meta), `source_registry.json`, `scrape_manifest.json` — all under `data/raw/manifests/`.
+- **Scraper runs with `network_mode: host`** in Docker so it uses the host's residential IP, which passes Cloudflare.
+
+### Ingestor
+
+- **Chunker is hierarchical parent-child**, not simple fixed-size: parent = full section (≤1500 chars), children = sentence-bounded sub-chunks (≤400 chars) prefixed with `"{title} — {section}: "` for contextual retrieval.
+- **CLIP endpoint uses `UploadFile`**: FastAPI treats bare `bytes` parameters as query params. The `/embed/image` endpoint must use `File(...)` + `UploadFile`, and `python-multipart` must be in requirements.
+- **Image manifest path**: `/data/raw/manifests/image_manifest.json` (not `/data/state/`). Flat dict — no `images` wrapper key.
+- **Relationship builder creates stub nodes** for referenced entities not yet in the graph (e.g. a game referenced by a character that wasn't scraped), filled in when that category is ingested.
+- **Neo4j `_MERGE_REL` query produces Cartesian product warnings**: `MATCH (a {id:...}), (b {id:...})` without labels triggers a Neo4j performance notification. Not a bug — both sides are indexed. Can be silenced later by adding labels to the MATCH pattern.
 
 ---
 
