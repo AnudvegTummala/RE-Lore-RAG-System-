@@ -43,10 +43,32 @@ async def _stream_response(query: str):
             "done": True,
             "answer": final_state.get("answer", ""),
             "sources": _serialise_sources(final_state.get("text_results", [])),
-            "images": final_state.get("image_results", []),
-            "graph": _serialise_graph(final_state.get("graph_results", [])),
+            "images": _serialise_images(final_state.get("image_results", [])),
+            "graph": _serialise_graph(
+                final_state.get("graph_results", []),
+                final_state.get("text_results", []),
+            ),
         }
         yield f"data: {json.dumps(payload)}\n\n"
+
+
+def _serialise_images(image_results: list) -> list[dict]:
+    out = []
+    for r in image_results:
+        raw_path = r.get("image_path", "")
+        # Convert container path /data/raw/images/X → /api/images/X so the
+        # browser's request hits the Vite proxy (/api/* → API) and the API's
+        # StaticFiles mount serves the file.
+        if raw_path.startswith("/data/raw/images/"):
+            browser_path = raw_path.replace("/data/raw/images/", "/api/images/", 1)
+        else:
+            browser_path = raw_path
+        out.append({
+            "image_id": r.get("image_id", ""),
+            "path": browser_path,
+            "caption": r.get("caption") or r.get("image_id", ""),
+        })
+    return out
 
 
 def _serialise_sources(text_results: list) -> list[dict]:
@@ -67,7 +89,7 @@ def _serialise_sources(text_results: list) -> list[dict]:
     return out
 
 
-def _serialise_graph(graph_results: list) -> dict:
+def _serialise_graph(graph_results: list, text_results: list | None = None) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_nodes: set[str] = set()
@@ -100,6 +122,27 @@ def _serialise_graph(graph_results: list) -> dict:
                     })
             except Exception:
                 pass
+
+    # Fallback: build stub nodes from text_results when Neo4j graph retrieval
+    # returned nothing (e.g. query had no capitalised entity hints).
+    if not nodes and text_results:
+        _LABEL_MAP = {
+            "character": "Character", "game": "Game", "enemy": "Enemy",
+            "location": "Location", "organization": "Organization",
+            "virus": "Virus", "weapon": "Weapon",
+        }
+        for r in text_results:
+            eid = r.get("entity_id", "")
+            if not eid or eid in seen_nodes:
+                continue
+            seen_nodes.add(eid)
+            et = r.get("entity_type", "")
+            nodes.append({
+                "id": eid,
+                "labels": [_LABEL_MAP.get(et, "Entity")],
+                "name": r.get("title", eid),
+                "entity_type": et,
+            })
 
     return {"nodes": nodes, "edges": edges}
 

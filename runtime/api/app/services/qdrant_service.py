@@ -36,9 +36,20 @@ class QdrantService:
         hits = await client.search(collection_name=collection, query_vector=vector, limit=limit)
         return [{"score": h.score, **h.payload} for h in hits]
 
-    async def search_by_vector(self, vector: list[float], collection: str, limit: int = 3) -> list[dict]:
+    async def search_by_vector(
+        self,
+        vector: list[float],
+        collection: str,
+        limit: int = 3,
+        query_filter: Filter | None = None,
+    ) -> list[dict]:
         client = self._get_client()
-        hits = await client.search(collection_name=collection, query_vector=vector, limit=limit)
+        hits = await client.search(
+            collection_name=collection,
+            query_vector=vector,
+            limit=limit,
+            query_filter=query_filter,
+        )
         return [{"score": h.score, **h.payload} for h in hits]
 
     async def get_entity(self, entity_id: str) -> dict | None:
