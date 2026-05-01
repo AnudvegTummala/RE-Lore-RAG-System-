@@ -43,10 +43,29 @@ async def _stream_response(query: str):
             "done": True,
             "answer": final_state.get("answer", ""),
             "sources": _serialise_sources(final_state.get("text_results", [])),
-            "images": final_state.get("image_results", []),
+            "images": _serialise_images(final_state.get("image_results", [])),
             "graph": _serialise_graph(final_state.get("graph_results", [])),
         }
         yield f"data: {json.dumps(payload)}\n\n"
+
+
+def _serialise_images(image_results: list) -> list[dict]:
+    out = []
+    for r in image_results:
+        raw_path = r.get("image_path", "")
+        # Convert container path /data/raw/images/X → /api/images/X so the
+        # browser's request hits the Vite proxy (/api/* → API) and the API's
+        # StaticFiles mount serves the file.
+        if raw_path.startswith("/data/raw/images/"):
+            browser_path = raw_path.replace("/data/raw/images/", "/api/images/", 1)
+        else:
+            browser_path = raw_path
+        out.append({
+            "image_id": r.get("image_id", ""),
+            "path": browser_path,
+            "caption": r.get("caption") or r.get("image_id", ""),
+        })
+    return out
 
 
 def _serialise_sources(text_results: list) -> list[dict]:
