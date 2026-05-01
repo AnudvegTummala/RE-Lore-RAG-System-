@@ -8,6 +8,7 @@ interface ChatMessageProps {
 
 export default function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === 'user'
+  const isError = message.content.startsWith('An error occurred')
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -18,16 +19,31 @@ export default function ChatMessage({ message }: ChatMessageProps) {
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="bg-re-surface-2 border border-re-border px-4 py-3 rounded text-sm leading-relaxed whitespace-pre-wrap">
-              {message.content}
-              {message.isStreaming && (
-                <span className="inline-block w-1.5 h-4 bg-re-red ml-0.5 animate-pulse" />
+            <div
+              className={`px-4 py-3 rounded text-sm leading-relaxed whitespace-pre-wrap border ${
+                isError
+                  ? 'bg-re-surface-2 border-red-900 text-red-400'
+                  : 'bg-re-surface-2 border-re-border text-re-text'
+              }`}
+            >
+              {message.content === '' && message.isStreaming ? (
+                <span className="flex items-center gap-2 text-re-muted font-mono text-xs">
+                  <span className="w-1.5 h-1.5 rounded-full bg-re-red animate-pulse" />
+                  Searching the archives...
+                </span>
+              ) : (
+                <>
+                  {message.content}
+                  {message.isStreaming && (
+                    <span className="inline-block w-1.5 h-4 bg-re-red ml-0.5 animate-pulse" />
+                  )}
+                </>
               )}
             </div>
-            {message.sources && message.sources.length > 0 && (
+            {!message.isStreaming && message.sources && message.sources.length > 0 && (
               <SourcePanel sources={message.sources} />
             )}
-            {message.images && message.images.length > 0 && (
+            {!message.isStreaming && message.images && message.images.length > 0 && (
               <ImageGallery images={message.images} />
             )}
           </div>
