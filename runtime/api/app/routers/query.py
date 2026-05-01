@@ -44,7 +44,10 @@ async def _stream_response(query: str):
             "answer": final_state.get("answer", ""),
             "sources": _serialise_sources(final_state.get("text_results", [])),
             "images": _serialise_images(final_state.get("image_results", [])),
-            "graph": _serialise_graph(final_state.get("graph_results", [])),
+            "graph": _serialise_graph(
+                final_state.get("graph_results", []),
+                final_state.get("text_results", []),
+            ),
         }
         yield f"data: {json.dumps(payload)}\n\n"
 
@@ -86,7 +89,7 @@ def _serialise_sources(text_results: list) -> list[dict]:
     return out
 
 
-def _serialise_graph(graph_results: list) -> dict:
+def _serialise_graph(graph_results: list, text_results: list | None = None) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_nodes: set[str] = set()
@@ -119,6 +122,27 @@ def _serialise_graph(graph_results: list) -> dict:
                     })
             except Exception:
                 pass
+
+    # Fallback: build stub nodes from text_results when Neo4j graph retrieval
+    # returned nothing (e.g. query had no capitalised entity hints).
+    if not nodes and text_results:
+        _LABEL_MAP = {
+            "character": "Character", "game": "Game", "enemy": "Enemy",
+            "location": "Location", "organization": "Organization",
+            "virus": "Virus", "weapon": "Weapon",
+        }
+        for r in text_results:
+            eid = r.get("entity_id", "")
+            if not eid or eid in seen_nodes:
+                continue
+            seen_nodes.add(eid)
+            et = r.get("entity_type", "")
+            nodes.append({
+                "id": eid,
+                "labels": [_LABEL_MAP.get(et, "Entity")],
+                "name": r.get("title", eid),
+                "entity_type": et,
+            })
 
     return {"nodes": nodes, "edges": edges}
 
