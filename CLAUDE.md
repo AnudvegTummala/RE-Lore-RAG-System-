@@ -48,10 +48,9 @@ npx tsc --noEmit   # type check
 
 ```bash
 docker compose up -d                                        # start all runtime services (Neo4j, Qdrant, clip-service, api)
-docker compose -f pipeline/docker-compose.yml up scraper   # run scraper
-docker compose -f pipeline/docker-compose.yml up ingestor  # run ingestor (requires runtime services up)
+docker compose -f pipeline/docker-compose.yml run --rm ingestor  # run ingestor (requires runtime services up)
 docker compose logs -f api                                  # tail a specific service
-docker compose build clip-service                           # rebuild one service
+docker compose build api                                    # rebuild one service
 bash scripts/reset-db.sh       # wipe Neo4j and Qdrant volumes
 ```
 
@@ -81,13 +80,17 @@ START → classify_query → graph_retrieval → vector_retrieval
 | Node | File | What it does |
 |---|---|---|
 | `classify_query` | `nodes/classify.py` | Regex entity extraction + sets `needs_image_search` flag |
-| `graph_retrieval` | `nodes/graph_retrieval.py` | Cypher 2-hop traversal on Neo4j using entity hints |
+| `graph_retrieval` | `nodes/graph_retrieval.py` | Cypher 2-hop traversal on Neo4j using entity hints; queries `e.title` (not `e.name`) |
 | `vector_retrieval` | `nodes/vector_retrieval.py` | sentence-transformers embed → Qdrant `lore_text` top-5 |
-| `image_retrieval` | `nodes/image_retrieval.py` | CLIP embed via clip-service → Qdrant `concept_art` top-3 |
-| `assemble_evidence` | `nodes/assemble.py` | Merge + deduplicate all results → `evidence` string |
+| `image_retrieval` | `nodes/image_retrieval.py` | CLIP embed via clip-service → Qdrant `concept_art` filtered by entity_ids from text_results |
+| `assemble_evidence` | `nodes/assemble.py` | Merge results → `evidence` string; deduplicates by (entity_id, section); skips sections with <80 meaningful chars |
 | `generate_answer` | `nodes/generate.py` | ChatGroq with `streaming=True` → `answer` |
 
-`classify_query` uses a **regex heuristic** (capitalized words for entities, keyword list for visual terms) — not spaCy. The `needs_image_search` flag is the only conditional edge in the graph.
+`classify_query` uses a **regex heuristic** (capitalised words for entities, keyword list for visual terms) — not spaCy. The `needs_image_search` flag is the only conditional edge in the graph.
+
+**Lowercase queries:** When the query has no capitalised entity hints, `graph_retrieval` returns nothing. `_serialise_graph` in `routers/query.py` falls back to building graph nodes from `text_results` entity_ids so the Knowledge Graph panel always shows something.
+
+**Image retrieval filtering:** `image_retrieval` restricts the CLIP vector search to `entity_ids` already identified by `vector_retrieval`. This prevents CLIP from returning visually similar images of the wrong character.
 
 ### SSE Streaming
 
@@ -103,17 +106,21 @@ The frontend's `useStreaming` hook (`src/hooks/useStreaming.ts`) drives all chat
 All services are module-level singletons:
 
 - `neo4j_service` (`services/neo4j_service.py`) — lazy `AsyncDriver` init
-- `qdrant_service` (`services/qdrant_service.py`) — lazy `AsyncQdrantClient` + `SentenceTransformer` init
+- `qdrant_service` (`services/qdrant_service.py`) — lazy `AsyncQdrantClient` + `SentenceTransformer` init; `encode()` runs in a thread executor to avoid blocking the event loop
 - `clip_client` (`services/clip_service_client.py`) — stateless HTTP client to the CLIP microservice
 - `get_llm()` (`services/llm.py`) — `@lru_cache` returning a single `ChatGroq` instance
 
 Config is loaded from `.env` via `pydantic-settings` into `core/config.py`'s `settings` singleton.
 
+### Image Serving
+
+`main.py` mounts a `StaticFiles` handler at `/images` pointing to `/data/raw/images`. The frontend accesses images via `/api/images/…` (with the `/api` prefix so the Vite proxy forwards the request to the API). `_serialise_images()` in `query.py` converts the container path `/data/raw/images/X` → `/api/images/X`.
+
 ### Frontend State
 
 Zustand store in `src/store/appStore.ts` is the single source of truth: `messages[]`, `isStreaming`, `activeGraph`, `selectedNode`. Components read from it via `useChat` / `useGraph` hooks.
 
-Vite proxies all `/api/*` requests to the FastAPI server (stripping the `/api` prefix), configured in `vite.config.ts`.
+Vite proxies all `/api/*` requests to the FastAPI server (stripping the `/api` prefix), configured in `vite.config.ts`. **Inside Docker the proxy target must be `http://api:8000` (service name), not `localhost:8000`.**
 
 ### Data Pipeline (offline, run before runtime)
 
@@ -121,13 +128,17 @@ Two separate services, run once to build the corpus:
 
 1. **Scraper** (`pipeline/scraper/`) — `BaseScraper` with rate limiting and checkpoint support. Fetches article HTML via `api.php?action=parse` (bypasses Cloudflare JS challenge on rendered pages). Outputs markdown files to `data/raw/markdown/{category}/` and images to `data/raw/images/`. Each markdown file has YAML frontmatter with `id`, `entity_type`, `related_games`, `image_refs`, `tags`. Categories are pulled from the API response (`prop=categories`) — the rendered HTML category links are absent in the parse API output.
 
-2. **Ingestor** (`pipeline/ingestor/`) — reads markdown, chunks hierarchically by heading (`utils/chunker.py`; parent ≤1500 chars, child ≤400 chars with contextual prefix), creates Neo4j nodes + 10 relationship types, embeds text chunks into Qdrant `lore_text` (dim=384, `all-MiniLM-L6-v2`), embeds images into Qdrant `concept_art` (dim=512, CLIP `ViT-B-32`). Image manifest is read from `/data/raw/manifests/image_manifest.json` (flat dict, no wrapper key). Images are sent to the CLIP service as `multipart/form-data` (`UploadFile`).
+   - **7 parsers, not 4**: `character`, `game`, `enemy`, `location`, `organization`, `virus`, `weapon` — all delegate to `parsers/common.py` (`parse_entity_page`).
+   - **URL discovery**: `api.php?action=query&list=categorymembers` with recursive BFS (depth ≤ 5) — avoids Cloudflare-blocked category HTML pages.
+   - **3 manifest files**: `image_manifest.json` (flat dict, `image_id → meta`), `source_registry.json`, `scrape_manifest.json` — all under `data/raw/manifests/`.
+
+2. **Ingestor** (`pipeline/ingestor/`) — reads markdown, chunks hierarchically by heading (`utils/chunker.py`; parent ≤1500 chars, child ≤400 chars with contextual prefix), creates Neo4j nodes + relationship types, embeds text chunks into Qdrant `lore_text` (dim=384, `all-MiniLM-L6-v2`), embeds images into Qdrant `concept_art` (dim=512, CLIP `ViT-B-32`). Image manifest is read from `/data/raw/manifests/image_manifest.json` (flat dict, no wrapper key). Images are sent to the CLIP service as `multipart/form-data` (`UploadFile`). Checkpoints stored at `/data/state/` (not `/data/checkpoints/`).
 
 The pipeline has its **own `docker-compose.yml`** in `pipeline/` and runs offline — it does not share a Docker network with the runtime stack. Both pipeline services use `network_mode: host` so they can reach the runtime services on localhost. Point `pipeline/.env` at the runtime services' host ports before running.
 
 ### Neo4j Schema
 
-Constraints enforced at startup (`pipeline/ingestor/app/graph/schema.py`): `id` is unique per label (`Character`, `Game`, `Enemy`, `Virus`, `Organization`, `Location`, `ConceptArt`, `LoreChunk`, `TimelineEvent`). Graph retrieval uses APOC `subgraphAll` for 2-hop traversal — the Neo4j container loads APOC via the `NEO4J_PLUGINS` env var in `docker-compose.yml`.
+Constraints enforced at startup (`pipeline/ingestor/app/graph/schema.py`): `id` is unique per label (`Character`, `Game`, `Enemy`, `Virus`, `Organization`, `Location`, `Weapon`, `ConceptArt`, `LoreChunk`, `TimelineEvent`). Title indexes exist per label for fast lookup. Graph retrieval uses APOC `subgraphAll` for 2-hop traversal — the Neo4j container loads APOC via the `NEO4J_PLUGINS` env var in `docker-compose.yml`.
 
 ### Qdrant Collections
 
@@ -136,14 +147,21 @@ Constraints enforced at startup (`pipeline/ingestor/app/graph/schema.py`): `id` 
 | `lore_text`   | all-MiniLM-L6-v2 | 384        | `pipeline/ingestor/app/embeddings/text_embedder.py`  |
 | `concept_art` | CLIP ViT-B-32    | 512        | `pipeline/ingestor/app/embeddings/image_embedder.py` |
 
-Collections are created idempotently by the ingestor before upserting. The CLIP service (`runtime/clip-service/`) is the only component that runs the OpenCLIP model — both the ingestor and the API's `image_retrieval` node call it over HTTP.
+Both collections have a keyword payload index on `entity_id` for efficient filtered search. Collections are created idempotently by the ingestor before upserting. The CLIP service (`runtime/clip-service/`) is the only component that runs the OpenCLIP model — both the ingestor and the API's `image_retrieval` node call it over HTTP.
 
 ---
 
 ## Known Gotchas
 
 - **CLIP service is slow to start** — model load takes 2–3 min. Wait for `health: healthy` in `docker ps` before running the ingestor, otherwise image embedding will fail with connection refused.
+- **Qdrant Docker image has no wget or curl** — the healthcheck uses `bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'` instead of a HTTP check.
+- **api pip resolver times out with loose version bounds** — `langgraph>=0.2` style specs cause `ResolutionTooDeep` after 20 min in pip 24.x. All langchain/langgraph deps are pinned to exact versions in `runtime/api/requirements.txt`.
+- **clip-service Debian package rename** — `libgl1-mesa-glx` was renamed to `libgl1` and `libglib2.0-0` to `libglib2.0-0t64` in Debian Trixie (the base used by `python:3.11-slim`).
+- **torch<2.6.0 not available for Python 3.13** — the clip-service requirements use `torch>=2.6.0`.
+- **llama3-70b-8192 decommissioned by Groq** — use `llama-3.3-70b-versatile` (set in `.env` as `GROQ_MODEL`).
+- **VITE_API_URL must use Docker service name** — inside Docker, `localhost` in the frontend container refers to itself, not the API. `docker-compose.yml` sets `VITE_API_URL=http://api:8000` so the Vite proxy reaches the API container.
+- **Ingestor checkpoint out of sync** — checkpoints live at `data/state/`. If a Qdrant or Neo4j volume is wiped after a run, the checkpoint will say "done" but the database is empty. Delete the relevant checkpoint file (`graph_loader.json`, `text_embedder.json`, or `image_embedder.json`) and re-run the ingestor.
 - **Scraper tags were empty on first run** — the `api.php?action=parse` response doesn't include the page header HTML where category links live. Fixed by adding `prop=categories` to the API call. Existing scraped files from before this fix have empty `tags: []` in their frontmatter.
 - **Empty body sections are not a parser bug** — many wiki articles have stub sections (e.g. `## History` with no content). The parser correctly produces empty sections for these.
 - **Category count mismatch is expected** — weapons (39), viruses (94), games (105) are just small categories on the wiki. The `MAX_PAGES` cap only hits the large categories.
-- **Neo4j password must match across both `.env` and `pipeline/.env`** — if Neo4j was previously initialized with a different password, wipe the volume: `docker volume rm re-lore-rag-system-_neo4j_data` or change the password from default password in .env.example to something else: `docker compose exec neo4j cypher-shell -u neo4j -p your_neo4j_password_here "ALTER USER neo4j SET PASSWORD 'NEW_PASSWORD'"`
+- **Neo4j password must match across both `.env` and `pipeline/.env`** — if Neo4j was previously initialized with a different password, wipe the volume: `docker volume rm re-lore-rag-system-_neo4j_data` or reset via cypher-shell.
