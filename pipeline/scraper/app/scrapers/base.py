@@ -4,24 +4,93 @@ from abc import ABC, abstractmethod
 
 import httpx
 
+from app.utils.rate_limit import RateLimiter
+
 logger = logging.getLogger(__name__)
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+DEFAULT_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
+MAX_CONCURRENT_REQUESTS = 5
+MAX_RETRIES = 5
+MAX_BACKOFF_SECONDS = 64
+RETRYABLE_STATUS_CODES = {429, 403, 503}
+
+_GLOBAL_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+_GLOBAL_LIMITER = RateLimiter()
+
+
+class FetchError(Exception):
+    """Raised when a URL fetch exhausts all retries."""
 
 
 class BaseScraper(ABC):
-    def __init__(self, rate_delay: float = 2.0, max_pages: int = 500):
-        self.rate_delay = rate_delay
-        self.max_pages = max_pages
+    """Shared HTTP fetch infrastructure for all scrapers.
 
-    async def fetch(self, client: httpx.AsyncClient, url: str, retries: int = 3) -> str | None:
-        for attempt in range(retries):
-            try:
-                response = await client.get(url, follow_redirects=True)
-                response.raise_for_status()
-                return response.text
-            except httpx.HTTPError as exc:
-                logger.warning("Fetch failed %s attempt %d: %s", url, attempt + 1, exc)
-                if attempt < retries - 1:
-                    await asyncio.sleep(self.rate_delay * (attempt + 1))
+    All concrete scrapers share a single global semaphore (max 5 concurrent
+    requests) and a single global rate limiter. The fetch method performs
+    exponential backoff (2^attempt seconds, capped at 64s) on retryable
+    statuses (429, 403, 503) and on transport errors, up to MAX_RETRIES
+    attempts. Permanent failures are logged and return None.
+    """
+
+    def __init__(self, max_pages: int = 500):
+        self.max_pages = max_pages
+        self.headers = dict(DEFAULT_HEADERS)
+        self.limiter = _GLOBAL_LIMITER
+        self.semaphore = _GLOBAL_SEMAPHORE
+
+    def build_client(self, timeout: float = 30.0) -> httpx.AsyncClient:
+        return httpx.AsyncClient(headers=self.headers, timeout=timeout, http2=True)
+
+    async def fetch(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        *,
+        binary: bool = False,
+    ) -> str | bytes | None:
+        for attempt in range(MAX_RETRIES):
+            async with self.semaphore:
+                await self.limiter.wait(url)
+                try:
+                    response = await client.get(url, follow_redirects=True)
+                except httpx.RequestError as exc:
+                    backoff = min(2 ** attempt, MAX_BACKOFF_SECONDS)
+                    logger.warning(
+                        "Network error on %s (attempt %d/%d): %s; backoff %.1fs",
+                        url, attempt + 1, MAX_RETRIES, exc, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+
+            if 200 <= response.status_code < 300:
+                return response.content if binary else response.text
+
+            if response.status_code in RETRYABLE_STATUS_CODES:
+                backoff = min(2 ** attempt, MAX_BACKOFF_SECONDS)
+                logger.warning(
+                    "HTTP %d on %s (attempt %d/%d); backoff %.1fs",
+                    response.status_code, url, attempt + 1, MAX_RETRIES, backoff,
+                )
+                await asyncio.sleep(backoff)
+                continue
+
+            logger.warning(
+                "Non-retryable HTTP %d on %s; giving up",
+                response.status_code, url,
+            )
+            return None
+
+        logger.error("Exhausted %d retries on %s", MAX_RETRIES, url)
         return None
 
     @abstractmethod

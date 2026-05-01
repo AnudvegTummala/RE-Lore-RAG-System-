@@ -137,13 +137,18 @@ re-lore-oracle/
 │   │       │   ├── wikipedia.py
 │   │       │   └── images.py
 │   │       ├── parsers/
+│   │       │   ├── common.py           ← shared parse_entity_page logic
 │   │       │   ├── character_parser.py
 │   │       │   ├── game_parser.py
 │   │       │   ├── enemy_parser.py
-│   │       │   └── location_parser.py
+│   │       │   ├── location_parser.py
+│   │       │   ├── organization_parser.py
+│   │       │   ├── virus_parser.py
+│   │       │   └── weapon_parser.py
 │   │       └── utils/
 │   │           ├── checkpoint.py
 │   │           ├── cleaner.py
+│   │           ├── manifests.py        ← ImageManifest, SourceRegistry, ScrapeManifest
 │   │           ├── markdown_writer.py
 │   │           └── rate_limit.py
 │   └── ingestor/
@@ -198,6 +203,27 @@ re-lore-oracle/
     ├── reset-db.sh
     └── export-snapshots.sh
 ```
+
+---
+
+## Implementation Decisions & Deviations from Original Plan
+
+### Scraper
+
+- **Fandom fetch strategy changed**: Original plan used direct HTML page fetches. Cloudflare blocks HTTP/1.1 requests from datacenter IPs (including Docker containers). Switched to `api.php?action=parse` which is not protected by Cloudflare JS challenge. The canonical wiki URL is still stored as `source_url` in frontmatter.
+- **URL discovery via categorymembers API**: Category listing pages (`/wiki/Category:Characters`) are also Cloudflare-protected. Switched to `api.php?action=query&list=categorymembers` with recursive BFS for subcategories.
+- **Categories (tags) from API**: `api.php?action=parse` response does not include the page header HTML where category links live. Added `prop=categories` to pull non-hidden categories directly from the API response.
+- **7 parsers, not 4**: Added `organization_parser`, `virus_parser`, `weapon_parser` (plan only listed 4). All 7 delegate to a shared `parsers/common.py` (`parse_entity_page`).
+- **3 manifest files**: `image_manifest.json` (flat dict, image_id → meta), `source_registry.json`, `scrape_manifest.json` — all under `data/raw/manifests/`.
+- **Scraper runs with `network_mode: host`** in Docker so it uses the host's residential IP, which passes Cloudflare.
+
+### Ingestor
+
+- **Chunker is hierarchical parent-child**, not simple fixed-size: parent = full section (≤1500 chars), children = sentence-bounded sub-chunks (≤400 chars) prefixed with `"{title} — {section}: "` for contextual retrieval.
+- **CLIP endpoint uses `UploadFile`**: FastAPI treats bare `bytes` parameters as query params. The `/embed/image` endpoint must use `File(...)` + `UploadFile`, and `python-multipart` must be in requirements.
+- **Image manifest path**: `/data/raw/manifests/image_manifest.json` (not `/data/state/`). Flat dict — no `images` wrapper key.
+- **Relationship builder creates stub nodes** for referenced entities not yet in the graph (e.g. a game referenced by a character that wasn't scraped), filled in when that category is ingested.
+- **Neo4j `_MERGE_REL` query produces Cartesian product warnings**: `MATCH (a {id:...}), (b {id:...})` without labels triggers a Neo4j performance notification. Not a bug — both sides are indexed. Can be silenced later by adding labels to the MATCH pattern.
 
 ---
 
@@ -339,15 +365,21 @@ The FastAPI `/query` router calls `compiled_graph.astream_events(initial_state, 
 
 ### `lore_text`
 
-Sentence-transformer embeddings of markdown chunks.
+Sentence-transformer embeddings of markdown chunks using a **parent-child hierarchical strategy with contextual prefixing**:
 
-Payload fields: `entity_id`, `entity_type`, `source_file`, `source_url`, `section`, `tags`
+- **Child chunks** (≤ 400 chars) are what gets embedded and indexed in Qdrant — small enough for precise retrieval.
+- **Parent chunks** (full section, ≤ 1500 chars) are stored in the Qdrant payload alongside the child — this is what gets sent to the LLM as context.
+- Every chunk is prefixed with `"{title} — {section_name}: "` before embedding so vectors carry entity context even when the chunk is read in isolation (contextual retrieval).
+
+Payload fields: `entity_id`, `entity_type`, `source_file`, `source_url`, `section`, `tags`, `chunk_text` (child, embedded), `parent_text` (full section, returned to LLM)
 
 ### `concept_art`
 
-CLIP embeddings of images.
+CLIP embeddings of images sourced from `image_manifest.json` (only entries with a `local_path`).
 
-Payload fields: `entity_id`, `entity_type`, `image_path`, `caption`, `tags`
+Payload fields: `image_id`, `entity_id`, `entity_type`, `image_path`, `caption` (alt_text from manifest), `tags`
+
+Both `lore_text` and `concept_art` have a Qdrant payload index on `entity_id` (keyword type) for efficient filtered search during graph-anchored retrieval.
 
 ---
 
@@ -399,16 +431,23 @@ data/raw/markdown/
 
 ### Chunk Metadata
 
+Parent-child chunking with contextual prefixing. Each Qdrant point represents one child chunk:
+
 ```json
 {
   "chunk_id": "leon-s-kennedy_biography_001",
   "entity_id": "character-leon-s-kennedy",
+  "entity_type": "character",
   "section": "Biography",
   "source_file": "data/raw/markdown/characters/leon-s-kennedy.md",
   "source_url": "https://example.com/leon",
-  "text": "..."
+  "tags": ["protagonist", "rpd"],
+  "chunk_text": "Leon S. Kennedy — Biography: Leon was recruited by...",
+  "parent_text": "Leon S. Kennedy — Biography: Leon was recruited by the RPD after graduating... [full section up to 1500 chars]"
 }
 ```
+
+The vector stored in Qdrant is the embedding of `chunk_text` (child, ≤ 400 chars with prefix). The `parent_text` field is retrieved at query time and passed to the LLM — giving precise retrieval with full-context generation.
 
 ---
 
@@ -469,27 +508,26 @@ Deliverable: Clean repo scaffold with working container skeleton.
 
 ### Phase 2 — Scraper Pipeline (Dev 2)
 
-- Build async scraper base class with retry and rate limiting
-- Implement Resident Evil wiki (Fandom) scraper
-- Implement Wikipedia supplementary scraper
-- Implement image downloader
-- Normalize page titles into slugs
-- Convert page content to markdown with YAML frontmatter
-- Write manifest files and checkpoint support
-- Validate corpus quality on a small subset first
+- Build async scraper base class with global `Semaphore(5)`, per-domain rate limiter (1.5–3.0 s gap), exponential backoff on 429/403/503; user-agent is a full Chrome UA string to pass Cloudflare checks
+- URL discovery via MediaWiki API (`api.php?list=categorymembers`) with BFS subcategory traversal (depth ≤ 5) — avoids Cloudflare-blocked category HTML pages; category names corrected to match live wiki (`Creatures`, `Organisations`, `Biological_agents`, `Equipment`)
+- Implement Resident Evil wiki (Fandom) scraper with shared `ImageManifest`, `SourceRegistry`, `ScrapeManifest`
+- Implement Wikipedia supplementary scraper (appends `## Wikipedia Summary` to game files)
+- Implement image downloader with Pillow dimension validation (skip < 100×100)
+- Normalize page titles into slugs; convert page content to markdown with YAML frontmatter
+- Atomic checkpoint writes (`.tmp` rename); auto-flush every 10 completions
+- Scraper container uses `network_mode: host` so Cloudflare sees residential IP over HTTP/2
 
 Deliverable: `data/raw/markdown/` corpus and `data/raw/images/` image corpus.
 
 ### Phase 3 — Ingestor Pipeline (Dev 2)
 
 - Implement markdown loader and frontmatter parser
-- Build chunking logic by heading and paragraph
-- Implement entity extraction helpers
-- Define Neo4j schema, constraints, and indexes
-- Build graph node and relationship creation logic
-- Generate text embeddings and load into `lore_text` Qdrant collection
-- Generate CLIP image embeddings and load into `concept_art` Qdrant collection
-- Add idempotent ingest behavior and produce ingest summary logs
+- Build hierarchical chunker: split by heading into parent sections (≤ 1500 chars), sub-split into child chunks (≤ 400 chars) by sentence boundary; prefix every chunk with `"{title} — {section}: "` for contextual retrieval
+- Define Neo4j schema, constraints, and indexes (one index per node label)
+- Build graph node loader (pass 1) and relationship builder (pass 2); relationship builder is lenient — creates stub nodes for referenced entities not yet in the graph so future scrape runs can fill them in
+- Generate text embeddings with `all-MiniLM-L6-v2` (dim=384); store child chunk as the embedded vector, parent section text in payload; run model in thread executor to avoid blocking the event loop
+- Generate CLIP image embeddings via HTTP calls to clip-service (dim=512); skip images without a `local_path` in image_manifest
+- All steps idempotent via checkpoint; produce summary log at completion
 
 Deliverable: Populated Neo4j and Qdrant volumes ready for runtime.
 

@@ -29,6 +29,7 @@ data/raw/markdown/
 data/raw/images/
 data/processed/
 data/checkpoints/
+data/state/**
 # Keep the manifests directory structure but not the files
 !data/raw/manifests/
 data/raw/manifests/*.json

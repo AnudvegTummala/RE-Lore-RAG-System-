@@ -1,11 +1,23 @@
 from pathlib import Path
-import frontmatter as fm
+
+from app.utils.frontmatter import extract_frontmatter
 
 
-def load_markdown_files(path: Path) -> dict:
-    post = fm.load(str(path))
+def load_markdown_file(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    fm, body = extract_frontmatter(text)
     return {
-        "frontmatter": dict(post.metadata),
-        "body": post.content,
+        "frontmatter": fm,
+        "body": body,
         "source_file": str(path),
     }
+
+
+def load_markdown_dir(root: Path) -> list[dict]:
+    docs = []
+    for path in sorted(root.rglob("*.md")):
+        try:
+            docs.append(load_markdown_file(path))
+        except Exception:
+            pass
+    return docs

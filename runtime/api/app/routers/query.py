@@ -42,14 +42,66 @@ async def _stream_response(query: str):
         payload = {
             "done": True,
             "answer": final_state.get("answer", ""),
-            "sources": final_state.get("text_results", []),
+            "sources": _serialise_sources(final_state.get("text_results", [])),
             "images": final_state.get("image_results", []),
-            "graph": {
-                "nodes": [],
-                "edges": [],
-            },
+            "graph": _serialise_graph(final_state.get("graph_results", [])),
         }
         yield f"data: {json.dumps(payload)}\n\n"
+
+
+def _serialise_sources(text_results: list) -> list[dict]:
+    out = []
+    seen: set[str] = set()
+    for r in text_results:
+        eid = r.get("entity_id", "")
+        if eid in seen:
+            continue
+        seen.add(eid)
+        out.append({
+            "entity_id": eid,
+            "title": r.get("title", eid),
+            "section": r.get("section", ""),
+            "snippet": (r.get("parent_text") or r.get("chunk_text") or r.get("text", ""))[:200],
+            "source_url": r.get("source_url", ""),
+        })
+    return out
+
+
+def _serialise_graph(graph_results: list) -> dict:
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_nodes: set[str] = set()
+    seen_edges: set[tuple] = set()
+
+    for rec in graph_results:
+        for node in rec.get("nodes", []):
+            try:
+                props = dict(node)
+                nid = props.get("id") or str(node.element_id)
+                if nid not in seen_nodes:
+                    seen_nodes.add(nid)
+                    nodes.append({
+                        "id": nid,
+                        "labels": list(node.labels),
+                        "name": props.get("title") or props.get("name") or nid,
+                        "entity_type": props.get("entity_type", ""),
+                    })
+            except Exception:
+                pass
+        for rel in rec.get("relationships", []):
+            try:
+                key = (str(rel.start_node.element_id), rel.type, str(rel.end_node.element_id))
+                if key not in seen_edges:
+                    seen_edges.add(key)
+                    edges.append({
+                        "source": dict(rel.start_node).get("id") or str(rel.start_node.element_id),
+                        "type": rel.type,
+                        "target": dict(rel.end_node).get("id") or str(rel.end_node.element_id),
+                    })
+            except Exception:
+                pass
+
+    return {"nodes": nodes, "edges": edges}
 
 
 @router.post("/query")

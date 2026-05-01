@@ -10,8 +10,7 @@ services:
       RATE_LIMIT_DELAY: "${RATE_LIMIT_DELAY:-2.0}"
       MAX_PAGES: "${MAX_PAGES:-500}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-    networks:
-      - pipeline-net
+    network_mode: host
 
   ingestor:
     build:
@@ -27,9 +26,4 @@ services:
       CLIP_SERVICE_URL: "${CLIP_SERVICE_URL}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-all-MiniLM-L6-v2}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-    networks:
-      - pipeline-net
-
-networks:
-  pipeline-net:
-    driver: bridge
+    network_mode: host
