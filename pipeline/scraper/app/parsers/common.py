@@ -308,17 +308,20 @@ def parse_entity_page(
     *,
     scraped_at: str | None = None,
     api_title: str | None = None,
+    api_categories: list[str] | None = None,
 ) -> dict:
     """Parse a Fandom article into the canonical entity record."""
-    # api_title comes from the parse API response and is always accurate.
-    # _extract_title is a fallback for when the HTML fragment has no <h1>.
     title = api_title or _extract_title(soup)
     name_slug = slug(title) or "unknown"
     entity_slug = f"{entity_type}-{name_slug}"
 
     infobox_pairs, infobox_links = _extract_infobox(soup)
     related_games = _related_games_from_infobox(infobox_links)
-    tags = _extract_categories(soup)
+    # Prefer API-supplied categories (reliable); fall back to HTML scraping.
+    if api_categories is not None:
+        tags = [slug(c) for c in api_categories if slug(c)]
+    else:
+        tags = _extract_categories(soup)
     sections, images = _extract_body_and_images(soup, name_slug)
     body_md = _build_body_markdown(title, sections)
 

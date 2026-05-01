@@ -9,5 +9,6 @@ def parse_location(
     scraped_at: str | None = None,
     *,
     api_title: str | None = None,
+    api_categories: list[str] | None = None,
 ) -> dict:
-    return parse_entity_page(soup, source_url, "location", scraped_at=scraped_at, api_title=api_title)
+    return parse_entity_page(soup, source_url, "location", scraped_at=scraped_at, api_title=api_title, api_categories=api_categories)

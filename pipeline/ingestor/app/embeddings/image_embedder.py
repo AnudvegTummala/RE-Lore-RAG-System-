@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 _QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 _CLIP_URL = os.getenv("CLIP_SERVICE_URL", "http://localhost:8001")
-_MANIFEST_PATH = Path("/data/state/image_manifest.json")
+_MANIFEST_PATH = Path("/data/raw/manifests/image_manifest.json")
 _COLLECTION = "concept_art"
 _CONCURRENCY = 4
 
@@ -46,7 +46,8 @@ async def embed_image_corpus() -> dict:
         return {"images_embedded": 0, "images_skipped": 0, "errors": 0}
 
     manifest: dict = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
-    entries = manifest.get("images", {})
+    # Manifest is a flat dict of image_id -> meta (no wrapper key).
+    entries = manifest
 
     pending = [
         (image_id, meta)
@@ -102,8 +103,7 @@ async def _embed_one(
             image_bytes = local_path.read_bytes()
             response = await http.post(
                 f"{_CLIP_URL}/embed/image",
-                content=image_bytes,
-                headers={"Content-Type": "application/octet-stream"},
+                files={"image_bytes": (local_path.name, image_bytes, "application/octet-stream")},
             )
             response.raise_for_status()
             vector = response.json()["vector"]
