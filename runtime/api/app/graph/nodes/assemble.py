@@ -1,4 +1,17 @@
+import re
+
 from app.graph.state import GraphState
+
+# Minimum meaningful characters in parent_text after stripping whitespace and
+# bracket-only tokens like "[ 12 ]". Sections that are purely reference lists
+# ("Gallery [ ]", "History [ ]: [ 1 ] [ 2 ]") add no useful context for the LLM.
+_MIN_BODY_CHARS = 80
+
+
+def _meaningful_len(text: str) -> int:
+    """Return length of text after stripping citation brackets like [ 12 ] or [ ]."""
+    stripped = re.sub(r"\[\s*\d*\s*\]", "", text)
+    return len(stripped.strip())
 
 
 def assemble_evidence(state: GraphState) -> GraphState:
@@ -9,20 +22,28 @@ def assemble_evidence(state: GraphState) -> GraphState:
         parts.append("## Graph Knowledge\n" + _format_graph(graph_results))
 
     text_results = state.get("text_results", [])
-    seen_chunks: set[str] = set()
+    # Deduplicate by (entity_id, section) — different chunk_ids from the same
+    # section share the same parent_text, so including all of them is just noise.
+    seen_sections: set[tuple[str, str]] = set()
     text_parts: list[str] = []
     for r in text_results:
-        chunk_id = r.get("chunk_id", "")
-        if chunk_id in seen_chunks:
+        entity_id = r.get("entity_id", "")
+        section = r.get("section", "")
+        key = (entity_id, section)
+        if key in seen_sections:
             continue
-        seen_chunks.add(chunk_id)
-        # Ingestor stores parent_text (full section) for LLM context; fall back to
-        # chunk_text (prefixed child) then legacy 'text' field.
+        seen_sections.add(key)
+
+        # Use parent_text (full section) for LLM context.
         body = r.get("parent_text") or r.get("chunk_text") or r.get("text", "")
-        if body:
-            text_parts.append(f"- [{r.get('section', 'Lore')}] {body}")
+        if not body or _meaningful_len(body) < _MIN_BODY_CHARS:
+            continue
+
+        title = r.get("title", entity_id)
+        text_parts.append(f"### {title} — {section}\n{body}")
+
     if text_parts:
-        parts.append("## Lore Excerpts\n" + "\n".join(text_parts))
+        parts.append("## Lore Excerpts\n\n" + "\n\n".join(text_parts))
 
     evidence = "\n\n".join(parts) if parts else "No relevant lore found."
     return {**state, "evidence": evidence}
@@ -33,8 +54,6 @@ def _format_graph(records: list[dict]) -> str:
     seen: set[str] = set()
     for rec in records:
         for node in rec.get("nodes", []):
-            # Neo4j Python driver returns Node objects; labels is a frozenset,
-            # properties are accessed via dict(node).
             try:
                 labels = list(node.labels)
                 props = dict(node)
