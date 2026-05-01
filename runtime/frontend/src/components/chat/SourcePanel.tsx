@@ -15,6 +15,7 @@ export default function SourcePanel({ sources }: SourcePanelProps) {
             href={s.source_url || '#'}
             target="_blank"
             rel="noopener noreferrer"
+            title={s.snippet ?? ''}
             className="inline-flex items-center gap-1 text-xs bg-re-surface-2 border border-re-border px-2 py-1 rounded hover:border-re-red transition-colors"
           >
             <span className="text-re-red font-mono">§</span>

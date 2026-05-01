@@ -85,8 +85,13 @@ export default function GraphViewer() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="p-3 border-b border-re-border">
+      <div className="p-3 border-b border-re-border flex items-center justify-between">
         <p className="text-xs text-re-muted font-mono uppercase tracking-wider">Knowledge Graph</p>
+        {activeGraph && (
+          <span className="text-xs text-re-muted font-mono">
+            {activeGraph.nodes.length}n · {activeGraph.edges.length}e
+          </span>
+        )}
       </div>
       {activeGraph ? (
         <div ref={containerRef} className="flex-1 bg-re-dark" />
