@@ -5,11 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ### Python (activate venv first)
+
 ```bash
 source .venv/bin/activate
 ```
 
 **Lint:**
+
 ```bash
 ruff check runtime/api/app/
 ruff check runtime/clip-service/app/
@@ -17,21 +19,25 @@ ruff check pipeline/scraper/app/ pipeline/ingestor/app/
 ```
 
 **Run API locally (requires Neo4j, Qdrant, clip-service running):**
+
 ```bash
 cd runtime/api && uvicorn app.main:app --reload --port 8000
 ```
 
 **Run a single test:**
+
 ```bash
 pytest runtime/api/tests/test_nodes.py::test_classify_query -v
 ```
 
 **Run all API tests:**
+
 ```bash
 pytest runtime/api/tests/ -v --tb=short
 ```
 
 ### Frontend
+
 ```bash
 cd runtime/frontend
 npm run dev        # dev server at http://localhost:3000
@@ -39,6 +45,7 @@ npx tsc --noEmit   # type check
 ```
 
 ### Docker (full stack)
+
 ```bash
 docker compose up -d                                        # start all runtime services (Neo4j, Qdrant, clip-service, api)
 docker compose -f pipeline/docker-compose.yml up scraper   # run scraper
@@ -49,6 +56,7 @@ bash scripts/reset-db.sh       # wipe Neo4j and Qdrant volumes
 ```
 
 **Two separate env files are required:**
+
 - `.env` — runtime (copy from `.env.example`, set `GROQ_API_KEY` and `NEO4J_PASSWORD`)
 - `pipeline/.env` — pipeline (copy from `pipeline/.env.example`, same password, point URLs at localhost)
 
@@ -84,6 +92,7 @@ START → classify_query → graph_retrieval → vector_retrieval
 ### SSE Streaming
 
 `POST /query` (in `routers/query.py`) calls `compiled_graph.astream_events(initial_state, version="v2")` and filters two event types:
+
 - `on_chat_model_stream` → streams `{"token": "..."}` events immediately
 - `on_chain_end` where `name == "LangGraph"` → emits the final `{"done": true, "answer": ..., "sources": ..., "images": ..., "graph": ...}` event
 
@@ -92,6 +101,7 @@ The frontend's `useStreaming` hook (`src/hooks/useStreaming.ts`) drives all chat
 ### Services (runtime/api)
 
 All services are module-level singletons:
+
 - `neo4j_service` (`services/neo4j_service.py`) — lazy `AsyncDriver` init
 - `qdrant_service` (`services/qdrant_service.py`) — lazy `AsyncQdrantClient` + `SentenceTransformer` init
 - `clip_client` (`services/clip_service_client.py`) — stateless HTTP client to the CLIP microservice
@@ -121,10 +131,10 @@ Constraints enforced at startup (`pipeline/ingestor/app/graph/schema.py`): `id` 
 
 ### Qdrant Collections
 
-| Collection | Model | Dimensions | Populated by |
-|---|---|---|---|
-| `lore_text` | all-MiniLM-L6-v2 | 384 | `pipeline/ingestor/app/embeddings/text_embedder.py` |
-| `concept_art` | CLIP ViT-B-32 | 512 | `pipeline/ingestor/app/embeddings/image_embedder.py` |
+| Collection    | Model            | Dimensions | Populated by                                         |
+| ------------- | ---------------- | ---------- | ---------------------------------------------------- |
+| `lore_text`   | all-MiniLM-L6-v2 | 384        | `pipeline/ingestor/app/embeddings/text_embedder.py`  |
+| `concept_art` | CLIP ViT-B-32    | 512        | `pipeline/ingestor/app/embeddings/image_embedder.py` |
 
 Collections are created idempotently by the ingestor before upserting. The CLIP service (`runtime/clip-service/`) is the only component that runs the OpenCLIP model — both the ingestor and the API's `image_retrieval` node call it over HTTP.
 
@@ -136,4 +146,4 @@ Collections are created idempotently by the ingestor before upserting. The CLIP 
 - **Scraper tags were empty on first run** — the `api.php?action=parse` response doesn't include the page header HTML where category links live. Fixed by adding `prop=categories` to the API call. Existing scraped files from before this fix have empty `tags: []` in their frontmatter.
 - **Empty body sections are not a parser bug** — many wiki articles have stub sections (e.g. `## History` with no content). The parser correctly produces empty sections for these.
 - **Category count mismatch is expected** — weapons (39), viruses (94), games (105) are just small categories on the wiki. The `MAX_PAGES` cap only hits the large categories.
-- **Neo4j password must match across both `.env` and `pipeline/.env`** — if Neo4j was previously initialized with a different password, wipe the volume: `docker volume rm re-lore-rag-system-_neo4j_data`.
+- **Neo4j password must match across both `.env` and `pipeline/.env`** — if Neo4j was previously initialized with a different password, wipe the volume: `docker volume rm re-lore-rag-system-_neo4j_data` or change the password from default password in .env.example to something else: `docker compose exec neo4j cypher-shell -u neo4j -p your_neo4j_password_here "ALTER USER neo4j SET PASSWORD 'NEW_PASSWORD'"`
