@@ -132,3 +132,47 @@ Branch strategy: feature branches → `develop` → `main` via PR.
 - **Two `.env` files** — `.env` for runtime, `pipeline/.env` for pipeline (both need the same `NEO4J_PASSWORD`)
 - **Pipeline uses `network_mode: host`** — so it can reach runtime services on `localhost`; does not share a Docker network with the runtime stack
 - **Ingestor checkpoints** live at `data/state/`. If a database volume is wiped, delete the relevant checkpoint file and re-run the ingestor to re-populate.
+
+---
+
+## Docker Reference
+
+### Useful commands
+
+```bash
+# Rebuild a single service after code or dependency changes
+docker compose build api
+docker compose -f pipeline/docker-compose.yml build scraper
+
+# Tail logs for a running service
+docker compose logs -f api
+
+# Wipe Neo4j and Qdrant volumes (data only — does not remove images)
+bash scripts/reset-db.sh
+
+# Run a quick scraper smoke test (games only, 20 pages)
+docker compose -f pipeline/docker-compose.yml run --rm \
+  -e SCRAPE_TARGET=games \
+  -e MAX_PAGES=20 \
+  scraper
+```
+
+### Storage management (Fedora Linux + Docker Desktop)
+
+Docker Desktop stores all layers inside a virtual disk image (`~/.docker/desktop/vms/0/data/Docker.raw`). This file grows on every build but **never shrinks automatically** — even after `docker system prune`. Over many rebuilds this will fill your disk.
+
+**After each build session — prune dangling intermediate layers:**
+```bash
+docker image prune -f
+```
+
+**When you feel disk pressure — reclaim space from the VM disk:**
+```bash
+docker system prune -a --volumes   # clear everything unused first
+# Then: Docker Desktop → Settings → Resources → Reclaim space
+```
+
+**Prevent unbounded growth — set a disk size cap:**
+Docker Desktop → Settings → Resources → Virtual disk limit → ~40 GB
+
+Full details and troubleshooting in [docs/docker-storage-and-builds.md](docs/docker-storage-and-builds.md).

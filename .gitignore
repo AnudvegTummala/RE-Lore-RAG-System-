@@ -34,6 +34,9 @@ data/state/**
 !data/raw/manifests/
 data/raw/manifests/*.json
 
+data-polluted/** 
+# old data (temporarily added)
+
 # ── Docker ─────────────────────────────────────────────────────────────────────
 
 

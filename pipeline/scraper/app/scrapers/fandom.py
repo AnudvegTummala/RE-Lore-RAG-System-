@@ -48,6 +48,113 @@ _API_URL = f"{_BASE_URL}/api.php"
 # Max subcategory recursion depth during BFS URL discovery.
 _MAX_SUBCAT_DEPTH = 5
 
+# Subcategories whose entire subtrees should be skipped during BFS.
+# These cover non-game universes: Anderson films, novelizations (DeCandido,
+# Perry), comics (WildStorm), and crossover games (Monolith Soft).
+# Category names verified against the live wiki category tree.
+_EXCLUDED_SUBCATEGORIES: frozenset[str] = frozenset({
+    # Anderson film series (all five films + shared film infrastructure)
+    "Category:Anderson characters",
+    "Category:Anderson organizations",
+    "Category:Anderson Umbrella employees",
+    "Category:Film creatures",
+    "Category:Film locations",
+    "Category:Resident Evil (film) characters",
+    "Category:Resident Evil: Afterlife characters",
+    "Category:Resident Evil: Apocalypse characters",
+    "Category:Resident Evil: Extinction characters",
+    "Category:Resident Evil: Retribution characters",
+    "Category:Resident Evil: The Final Chapter characters",
+    "Category:Clones",
+    # DeCandido novelizations
+    "Category:DeCandido characters",
+    "Category:DeCandido locations",
+    "Category:DeCandido organizations",
+    "Category:DeCandido Umbrella employees",
+    "Category:Resident Evil: Apocalypse novelization characters",
+    "Category:Resident Evil: Extinction novelization characters",
+    "Category:Resident Evil: Genesis characters",
+    # Perry novel series
+    "Category:Perry characters",
+    "Category:Perry creatures",
+    "Category:Perry locations",
+    "Category:Perry organizations",
+    "Category:Perry Umbrella employees",
+    "Category:Resident Evil: Caliban Cove characters",
+    "Category:Resident Evil: City of the Dead characters",
+    "Category:Resident Evil: Nemesis characters",
+    "Category:Resident Evil: The Umbrella Conspiracy characters",
+    "Category:Resident Evil: Underworld characters",
+    "Category:Resident Evil: Zero Hour characters",
+    # WildStorm comics
+    "Category:WildStorm characters",
+    "Category:WildStorm creatures",
+    "Category:WildStorm locations",
+    "Category:WildStorm organizations",
+    "Category:WildStorm BSAA members",
+    "Category:WildStorm Umbrella employees",
+    # Monolith Soft crossover games (Namco × Capcom, Project × Zone)
+    "Category:Monolith Soft characters",
+    "Category:Namco ✕ Capcom characters",
+    "Category:Project ✕ Zone characters",
+    "Category:Project ✕ Zone 2 characters",
+    "Category:Project ✕ Zone 2 antagonists",
+    # Welcome to Raccoon City (2021 film reboot)
+    "Category:Resident Evil: Welcome to Raccoon City characters",
+    "Category:Resident Evil: Welcome to Raccoon City creatures",
+    "Category:Resident Evil: Welcome to Raccoon City locations",
+    "Category:Resident Evil: Welcome to Raccoon City organizations",
+    # Other non-canon universe buckets
+    "Category:King's Fountain characters",
+    "Category:King's Fountain organizations",
+    "Category:King's Fountain locations",
+    "Category:Shirley characters",
+    "Category:Tinhangse characters",
+    "Category:Yulang characters",
+})
+
+# Article-level category tags (as returned by api.php prop=categories, with
+# spaces not underscores) that mark a page as non-game-canon.  Used as a
+# second line of defence for pages that sit in both a game category and a
+# film/novel category.
+_EXCLUDED_ARTICLE_CATEGORIES: frozenset[str] = frozenset({
+    "Anderson characters",
+    "Anderson organizations",
+    "Film creatures",
+    "Film locations",
+    "Resident Evil (film) characters",
+    "Resident Evil: Afterlife characters",
+    "Resident Evil: Apocalypse characters",
+    "Resident Evil: Extinction characters",
+    "Resident Evil: Retribution characters",
+    "Resident Evil: The Final Chapter characters",
+    "Resident Evil: Apocalypse novelization characters",
+    "Resident Evil: Extinction novelization characters",
+    "Resident Evil: Genesis characters",
+    "DeCandido characters",
+    "DeCandido locations",
+    "DeCandido organizations",
+    "Perry characters",
+    "Perry creatures",
+    "Perry locations",
+    "Perry organizations",
+    "WildStorm characters",
+    "WildStorm creatures",
+    "WildStorm locations",
+    "WildStorm organizations",
+    "Monolith Soft characters",
+    "Namco ✕ Capcom characters",
+    "Project ✕ Zone characters",
+    "Project ✕ Zone 2 characters",
+    "Resident Evil: Welcome to Raccoon City characters",
+    "Resident Evil: Welcome to Raccoon City creatures",
+    "Resident Evil: Welcome to Raccoon City locations",
+    "King's Fountain characters",
+    "Shirley characters",
+    "Tinhangse characters",
+    "Yulang characters",
+})
+
 # (category_key) -> (fandom category name, entity_type, output folder)
 # Category names verified against the live wiki's Category:Lore_by_type tree.
 _CATEGORIES: dict[str, tuple[str, str, str]] = {
@@ -212,7 +319,7 @@ class FandomScraper(BaseScraper):
                     if ns == 0 and pageid:
                         page_ids.add(pageid)
                     elif ns == 14 and depth < _MAX_SUBCAT_DEPTH:
-                        if title not in visited_cats:
+                        if title not in visited_cats and title not in _EXCLUDED_SUBCATEGORIES:
                             visited_cats.add(title)
                             queue.append((title, depth + 1))
 
@@ -316,6 +423,14 @@ class FandomScraper(BaseScraper):
             html, api_title, api_categories = await self._fetch_article_html(client, url)
             if not html:
                 self._registry.record(url, None)
+                self._scrape_manifest.record_page(category_key, success=False)
+                return
+
+            # Second-line filter: skip any article whose categories overlap
+            # with the excluded set (catches pages that appear in both a game
+            # category and a film/novel category during BFS).
+            if api_categories and _EXCLUDED_ARTICLE_CATEGORIES.intersection(api_categories):
+                logger.debug("Skipping non-game-canon article: %s", url)
                 self._scrape_manifest.record_page(category_key, success=False)
                 return
 

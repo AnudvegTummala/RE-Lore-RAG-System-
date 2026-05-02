@@ -216,6 +216,8 @@ re-lore-oracle/
 - **7 parsers, not 4**: Added `organization_parser`, `virus_parser`, `weapon_parser` (plan only listed 4). All 7 delegate to a shared `parsers/common.py` (`parse_entity_page`).
 - **3 manifest files**: `image_manifest.json` (flat dict, image_id → meta), `source_registry.json`, `scrape_manifest.json` — all under `data/raw/manifests/`.
 - **Scraper runs with `network_mode: host`** in Docker so it uses the host's residential IP, which passes Cloudflare.
+- **Film/non-game-canon filtering**: Two-layer filter added to `fandom.py`. `_EXCLUDED_SUBCATEGORIES` (frozenset) prevents BFS from entering film/novel/comic universe category subtrees (Anderson films, DeCandido/Perry novels, WildStorm comics, Monolith Soft crossovers, Welcome to Raccoon City). `_EXCLUDED_ARTICLE_CATEGORIES` is a second-pass intersection check on the article's own `prop=categories` response, catching pages that appear in both game and film categories. Category names verified against the live wiki API.
+- **Wikipedia scraper rewritten**: Replaced raw httpx REST calls with the `wikipedia-api` library (0.14.1). Now harvests targeted lore sections (Gameplay, Plot, Synopsis, Story, Setting, Characters, Narrative) instead of the thin summary paragraph. Sequential processing replaces unbounded `asyncio.gather`. Title resolution tries plain title → `(video game)` suffix → Roman numeral variant for numbered titles (e.g. RE4 → RE IV).
 
 ### Ingestor
 
@@ -511,7 +513,7 @@ Deliverable: Clean repo scaffold with working container skeleton.
 - Build async scraper base class with global `Semaphore(5)`, per-domain rate limiter (1.5–3.0 s gap), exponential backoff on 429/403/503; user-agent is a full Chrome UA string to pass Cloudflare checks
 - URL discovery via MediaWiki API (`api.php?list=categorymembers`) with BFS subcategory traversal (depth ≤ 5) — avoids Cloudflare-blocked category HTML pages; category names corrected to match live wiki (`Creatures`, `Organisations`, `Biological_agents`, `Equipment`)
 - Implement Resident Evil wiki (Fandom) scraper with shared `ImageManifest`, `SourceRegistry`, `ScrapeManifest`
-- Implement Wikipedia supplementary scraper (appends `## Wikipedia Summary` to game files)
+- Implement Wikipedia supplementary scraper — uses `wikipedia-api` library to fetch targeted sections (Gameplay, Plot, Synopsis, Story, Setting, Characters, Narrative) and appends them under a `## Wikipedia` heading; sequential processing for polite crawl rate; three-candidate title resolution
 - Implement image downloader with Pillow dimension validation (skip < 100×100)
 - Normalize page titles into slugs; convert page content to markdown with YAML frontmatter
 - Atomic checkpoint writes (`.tmp` rename); auto-flush every 10 completions
