@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import cytoscape from 'cytoscape'
 import { useGraph } from '../../hooks/useGraph'
 import NodeDetails from './NodeDetails'
@@ -18,6 +18,13 @@ export default function GraphViewer() {
   const cyRef = useRef<cytoscape.Core | null>(null)
   const { activeGraph, selectedNode, setSelectedNode } = useGraph()
 
+  // Stable callback so it never triggers Cytoscape re-init
+  const handleNodeTap = useCallback(
+    (evt: cytoscape.EventObject) => setSelectedNode(evt.target.id()),
+    [setSelectedNode],
+  )
+
+  // Init Cytoscape once — no reactive deps
   useEffect(() => {
     if (!containerRef.current) return
 
@@ -68,16 +75,15 @@ export default function GraphViewer() {
       ],
     })
 
-    cyRef.current.on('tap', 'node', (evt) => {
-      setSelectedNode(evt.target.id())
-    })
+    cyRef.current.on('tap', 'node', handleNodeTap)
 
     return () => {
       cyRef.current?.destroy()
       cyRef.current = null
     }
-  }, [setSelectedNode])
+  }, [handleNodeTap]) // handleNodeTap is stable — this runs once
 
+  // Update graph data whenever activeGraph changes
   useEffect(() => {
     const cy = cyRef.current
     if (!cy || !activeGraph || activeGraph.nodes.length === 0) return
