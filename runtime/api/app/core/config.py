@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "llama3-70b-8192"
 
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
     log_level: str = "INFO"
 
     class Config:
