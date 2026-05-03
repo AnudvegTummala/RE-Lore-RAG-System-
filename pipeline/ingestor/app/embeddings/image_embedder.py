@@ -116,8 +116,11 @@ async def _embed_one(
                     "entity_id":   meta.get("entity_id", ""),
                     "entity_type": meta.get("entity_type", ""),
                     "image_path":  str(local_path),
-                    "caption":     meta.get("alt_text", ""),
-                    "tags":        [],
+                    "caption":     meta.get("caption") or meta.get("alt_text", ""),
+                    "section":     meta.get("section", ""),
+                    "tags":        meta.get("tags", []),
+                    "width":       meta.get("width"),
+                    "height":      meta.get("height"),
                 },
             )
             await qdrant.upsert(collection_name=_COLLECTION, points=[point])
