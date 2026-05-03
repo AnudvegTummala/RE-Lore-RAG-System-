@@ -112,14 +112,39 @@ Self-contained chunker improvement. No dependency on Phase 1/2.
 
 Enriches the graph with data already extracted by the scraper but currently discarded.
 
-- [ ] **4a. Ingest all infobox properties as node properties**
+- [x] **4a. Ingest all infobox properties as node properties**
   `graph/loader.py` — when creating entity nodes, write the full `infobox` dict from frontmatter as individual node properties (e.g., `height`, `blood_type`, `nationality`, `status`) rather than only using a subset for relationship building.
 
-- [ ] **4b. Extract MENTIONS relationships from body text**
+- [x] **4b. Extract MENTIONS relationships from body text**
   New file `graph/mention_extractor.py` — after relationship building, scan each entity's markdown body for references to other known entity titles. For each hit, `MERGE (source)-[:MENTIONS]->(target)`. Use the existing entity title index for lookup. Checkpoint-gated.
 
-- [ ] **4c. Wire mention extractor into main pipeline**
+- [x] **4c. Wire mention extractor into main pipeline**
   `main.py` — add as Step 7 after relationship building.
+
+### Phase 4 — Completed Summary
+
+**Files changed:** `graph/loader.py`, `graph/mention_extractor.py` (new), `main.py`
+
+**4a — Infobox properties (`graph/loader.py`):**
+- New `_sanitise_infobox()` helper converts raw infobox keys to safe Neo4j property names: lowercased, non-alphanumeric runs replaced with `_`, leading/trailing underscores stripped.
+- Values are coerced to `str` unless already `bool`, `int`, `float`, or `list`, preventing mixed-type Neo4j errors.
+- New `_SET_INFOBOX` Cypher template uses `SET n += $props` which merges properties without overwriting unrelated ones.
+- In `load_graph()` pass 1, after the core `MERGE`/`SET`, the infobox dict is sanitised and written with a second query. Skipped if `infobox` is empty.
+
+**4b — Mention extractor (`graph/mention_extractor.py`):**
+- On startup, fetches all `(id, title)` pairs from Neo4j via a single `MATCH (n) WHERE n.id IS NOT NULL` query.
+- Titles shorter than 4 characters are excluded to reduce false positives.
+- Lookup list is sorted longest-title-first so multi-word names (e.g. `"Albert Wesker"`) match before their substrings (`"Wesker"`).
+- Each title is compiled into a `re.compile(r"\b" + re.escape(title) + r"\b", re.IGNORECASE)` pattern for whole-word matching.
+- For each source entity body, every pattern is tested; matching titles that aren't the entity itself get a `MERGE (source)-[:MENTIONS]->(target)`.
+- `IngestCheckpoint("mention_extractor")` gates per `entity_id` with phase `"mentions"`.
+
+**4c — Pipeline wiring (`main.py`):**
+- All step labels updated from `/6` to `/7`.
+- Step 7/7 calls `extract_mentions()` and logs its summary.
+- Final log line extended with `Mentions: %s`.
+
+**To take effect:** delete `data/state/graph_loader.json` and `data/state/mention_extractor.json` (if they exist) and re-run the ingestor. No re-scrape needed.
 
 ---
 
