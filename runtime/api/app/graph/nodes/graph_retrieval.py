@@ -20,10 +20,12 @@ RETURN nodes, relationships
 async def graph_retrieval(state: GraphState) -> GraphState:
     hints = state.get("entity_hints", [])
     if not hints:
+        logger.info("graph_retrieval: no hints, skipped")
         return {**state, "graph_results": []}
 
     try:
         records = await neo4j_service.run(_CYPHER, hints=hints)
+        logger.info("graph_retrieval: %d hints → %d records", len(hints), len(records))
         return {**state, "graph_results": records}
     except Exception:
         logger.exception("graph_retrieval failed")

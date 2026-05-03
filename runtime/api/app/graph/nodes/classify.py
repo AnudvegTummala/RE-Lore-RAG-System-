@@ -1,6 +1,9 @@
+import logging
 import re
 
 from app.graph.state import GraphState
+
+logger = logging.getLogger(__name__)
 
 _VISUAL_KEYWORDS = re.compile(
     r"\b(look(s)? like|concept art|appearance|design|portrait|image|picture|photo|"
@@ -41,8 +44,11 @@ def _extract_hints(query: str) -> list[str]:
 
 def classify_query(state: GraphState) -> GraphState:
     query = state["query"]
-    return {
-        **state,
-        "entity_hints": _extract_hints(query),
-        "needs_image_search": bool(_VISUAL_KEYWORDS.search(query)),
-    }
+    hints = _extract_hints(query)
+    needs_image = bool(_VISUAL_KEYWORDS.search(query))
+    logger.info(
+        "classify: hints=%s needs_image=%s",
+        hints or "(none)",
+        needs_image,
+    )
+    return {**state, "entity_hints": hints, "needs_image_search": needs_image}

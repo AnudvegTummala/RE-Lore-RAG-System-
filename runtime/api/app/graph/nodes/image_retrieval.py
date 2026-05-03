@@ -44,6 +44,10 @@ async def image_retrieval(state: GraphState) -> GraphState:
                 limit=3,
             )
 
+        logger.info(
+            "image_retrieval: %d images returned (filtered=%s)",
+            len(results), bool(entity_filter),
+        )
         return {**state, "image_results": results}
     except Exception:
         logger.exception("image_retrieval failed")
