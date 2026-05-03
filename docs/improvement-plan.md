@@ -76,14 +76,35 @@ Depends on Phase 1 manifest fields being populated.
 
 Self-contained chunker improvement. No dependency on Phase 1/2.
 
-- [ ] **3a. Add sentence-level overlap to chunker**
+- [x] **3a. Add sentence-level overlap to chunker**
   `utils/chunker.py` — when finishing a child chunk, carry the last sentence of that chunk forward as the start of the next child. ~50-char overlap. Prevents context loss at chunk boundaries.
 
-- [ ] **3b. Add sparse vector field to Qdrant lore_text collection**
+- [x] **3b. Add sparse vector field to Qdrant lore_text collection**
   `qdrant/collections.py` — configure `lore_text` with a named sparse vector alongside the existing dense vector. This is the foundation for hybrid BM25+dense search (Phase 5).
 
-- [ ] **3c. Compute and store BM25 sparse vectors at embed time**
+- [x] **3c. Compute and store BM25 sparse vectors at embed time**
   `embeddings/text_embedder.py` — use `qdrant_client`'s built-in `SparseVector` or a `BM25Encoder` (from `qdrant-sparse-encoders` / `fastembed`) to produce a sparse vector per chunk and upsert it alongside the dense vector.
+
+### Phase 3 — Completed Summary
+
+**Files changed:** `utils/chunker.py`, `qdrant/collections.py`, `embeddings/text_embedder.py`, `requirements.txt`
+
+**3a — Chunk overlap (`utils/chunker.py`):**
+- New `_last_sentence()` helper extracts the last sentence from a text string by splitting on `_SENTENCE_END`.
+- `_split_children()` now captures `overlap = _last_sentence(current)` before flushing each child. The next child starts with that overlap sentence, so every chunk boundary has ~one sentence of bridging context.
+- Both flush paths updated: the normal budget-overflow path and the hard-split path for oversized sentences.
+
+**3b — Named vector collection (`qdrant/collections.py`):**
+- `lore_text` is now created with `vectors_config={"dense": VectorParams(...)}` and `sparse_vectors_config={"sparse": SparseVectorParams(index=SparseIndexParams(on_disk=False))}`.
+- Imports extended with `SparseIndexParams`, `SparseVectorParams`.
+- `concept_art` collection is unchanged (dense-only CLIP; no sparse search needed there).
+
+**3c — BM25 sparse vectors (`embeddings/text_embedder.py`, `requirements.txt`):**
+- New dep: `fastembed==0.4.2` in `requirements.txt`.
+- `Bm25("Qdrant/bm25")` loaded at startup alongside the dense encoder — no corpus-level fitting required; uses a pre-fitted English model.
+- `flush_batch()` now calls `bm25.query_embed(texts)` to get sparse results alongside `encoder.encode()` for dense. Each `PointStruct` uses `vector={"dense": ..., "sparse": SparseVector(indices=..., values=...)}` matching the named-vector schema.
+
+**To take effect:** the `lore_text` Qdrant collection **must be deleted and recreated** (Qdrant does not support in-place vector config changes). Delete the collection via Qdrant dashboard or `qdrant-client`, delete `data/state/text_embedder.json`, and re-run the ingestor. No re-scrape needed.
 
 ---
 

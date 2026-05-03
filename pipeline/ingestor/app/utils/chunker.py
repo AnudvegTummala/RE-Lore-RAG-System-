@@ -86,11 +86,18 @@ def _split_sections(body: str) -> list[tuple[str, str]]:
     return sections
 
 
+def _last_sentence(text: str) -> str:
+    """Return the last sentence of text, or the whole text if no boundary found."""
+    parts = _SENTENCE_END.split(text.strip())
+    return parts[-1].strip() if parts else text.strip()
+
+
 def _split_children(text: str, prefix: str) -> list[str]:
     """Sub-split section text into prefixed child chunks ≤ CHILD_MAX_CHARS.
 
     Splits on sentence boundaries where possible; falls back to hard split
-    if a single sentence exceeds the limit.
+    if a single sentence exceeds the limit. Each chunk opens with the last
+    sentence of the previous chunk so context is not lost at boundaries.
     """
     budget = CHILD_MAX_CHARS - len(prefix)
     if budget <= 0:
@@ -109,15 +116,17 @@ def _split_children(text: str, prefix: str) -> list[str]:
         # Single sentence exceeds budget — hard split it
         if len(sentence) > budget:
             if current:
+                overlap = _last_sentence(current)
                 children.append(prefix + current.strip())
-                current = ""
+                current = overlap
             for start in range(0, len(sentence), budget):
                 children.append(prefix + sentence[start : start + budget])
             continue
 
         if current and len(current) + 1 + len(sentence) > budget:
+            overlap = _last_sentence(current)
             children.append(prefix + current.strip())
-            current = sentence
+            current = f"{overlap} {sentence}" if overlap else sentence
         else:
             current = f"{current} {sentence}" if current else sentence
 
