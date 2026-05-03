@@ -453,6 +453,9 @@ class FandomScraper(BaseScraper):
                     entity_id=parsed["frontmatter"]["id"],
                     entity_type=parsed["frontmatter"]["entity_type"],
                     alt_text=img["alt_text"],
+                    caption=img["caption"],
+                    section=img["section"],
+                    tags=parsed["frontmatter"]["tags"],
                     category_folder=folder_for_image,
                 )
 
