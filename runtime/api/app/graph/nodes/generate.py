@@ -15,6 +15,10 @@ async def generate_answer(state: GraphState) -> GraphState:
         response = await llm.ainvoke(prompt)
         answer = response.content
         retrieval_adequate = len(state.get("evidence", "")) > 50
+        logger.info(
+            "generate: answer %d chars, retrieval_adequate=%s",
+            len(answer), retrieval_adequate,
+        )
         return {**state, "answer": answer, "retrieval_adequate": retrieval_adequate}
     except Exception:
         logger.exception("generate_answer failed")
