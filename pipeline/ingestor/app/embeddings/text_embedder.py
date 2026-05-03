@@ -2,17 +2,24 @@
 
 Loads every markdown file from the corpus, runs the hierarchical chunker
 to produce parent-child chunk pairs, embeds each child chunk with
-``all-MiniLM-L6-v2`` (dim=384), and upserts into Qdrant.
+``all-MiniLM-L6-v2`` (dim=384, dense) and a pre-fitted BM25 model
+(sparse), then upserts both vectors into Qdrant as named vectors.
 
 Key design decisions:
 - SentenceTransformer.encode() is CPU/GPU-bound; it runs in a thread
   executor so it doesn't block the asyncio event loop.
+- BM25 sparse encoding uses fastembed's pre-fitted English model — no
+  corpus-level fitting required.
 - Qdrant upsert uses the async client throughout.
 - Points use UUID5 IDs derived from chunk_id so they are stable across
   re-runs (upsert is idempotent for existing points).
 - A file-level checkpoint skips already-embedded files on restart.
 - Embedding is batched (BATCH_SIZE chunks at a time) to avoid OOM on
   large corpora.
+- The lore_text collection must have named vectors ("dense" + "sparse")
+  — see qdrant/collections.py. If upgrading from an unnamed-vector
+  collection, delete it and re-run; Qdrant does not support in-place
+  vector config migration.
 """
 
 import asyncio
@@ -22,8 +29,9 @@ import uuid
 from functools import partial
 from pathlib import Path
 
+from fastembed.sparse.bm25 import Bm25
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import PointStruct
+from qdrant_client.models import PointStruct, SparseVector
 from sentence_transformers import SentenceTransformer
 
 from app.utils.checkpoint import IngestCheckpoint
@@ -47,9 +55,12 @@ def _chunk_uuid(chunk_id: str) -> str:
 
 
 async def embed_text_corpus() -> dict:
-    logger.info("Text embedder: loading model %s", _EMBED_MODEL)
+    logger.info("Text embedder: loading dense model %s", _EMBED_MODEL)
     loop = asyncio.get_running_loop()
     encoder = await loop.run_in_executor(None, SentenceTransformer, _EMBED_MODEL)
+
+    logger.info("Text embedder: loading BM25 sparse model")
+    bm25 = await loop.run_in_executor(None, lambda: Bm25("Qdrant/bm25"))
 
     client = AsyncQdrantClient(url=_QDRANT_URL)
     checkpoint = IngestCheckpoint("text_embedder")
@@ -65,12 +76,22 @@ async def embed_text_corpus() -> dict:
         if not batch_chunks:
             return
         texts = [c["chunk_text"] for c in batch_chunks]
+
         encode_fn = partial(encoder.encode, texts, show_progress_bar=False)
-        vectors = await loop.run_in_executor(None, encode_fn)
+        dense_vectors = await loop.run_in_executor(None, encode_fn)
+
+        sparse_results = list(bm25.query_embed(texts))
+
         points = [
             PointStruct(
                 id=_chunk_uuid(c["chunk_id"]),
-                vector=vectors[i].tolist(),
+                vector={
+                    "dense": dense_vectors[i].tolist(),
+                    "sparse": SparseVector(
+                        indices=sparse_results[i].indices.tolist(),
+                        values=sparse_results[i].values.tolist(),
+                    ),
+                },
                 payload={
                     "chunk_id":    c["chunk_id"],
                     "entity_id":   c["entity_id"],

@@ -2,7 +2,13 @@ import logging
 import os
 
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, PayloadSchemaType, VectorParams
+from qdrant_client.models import (
+    Distance,
+    PayloadSchemaType,
+    SparseIndexParams,
+    SparseVectorParams,
+    VectorParams,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +25,8 @@ async def ensure_collections() -> None:
     if "lore_text" not in existing:
         await client.create_collection(
             collection_name="lore_text",
-            vectors_config=VectorParams(size=_TEXT_DIM, distance=Distance.COSINE),
+            vectors_config={"dense": VectorParams(size=_TEXT_DIM, distance=Distance.COSINE)},
+            sparse_vectors_config={"sparse": SparseVectorParams(index=SparseIndexParams(on_disk=False))},
         )
         logger.info("Created collection: lore_text")
 
