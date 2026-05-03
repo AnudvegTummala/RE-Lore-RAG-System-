@@ -29,19 +29,19 @@ All changes in `pipeline/scraper/`. Must be done before re-running the scraper; 
 
 Depends on Phase 1 manifest fields being populated.
 
-- [ ] **2a. Forward dimensions + section + caption to Qdrant**
+- [x] **2a. Forward dimensions + section + caption to Qdrant**
   `embeddings/image_embedder.py` — add `width`, `height`, `section`, `caption` to the `PointStruct` payload. Use `meta.get("caption") or meta.get("alt_text", "")` as the caption value.
 
-- [ ] **2b. Add index on ConceptArt.entity_id**
+- [x] **2b. Add index on ConceptArt.entity_id**
   `graph/schema.py` — add `CREATE INDEX concept_art_entity IF NOT EXISTS FOR (n:ConceptArt) ON (n.entity_id)` alongside the existing uniqueness constraint.
 
-- [ ] **2c. Create image loader (ConceptArt nodes + HAS_IMAGE edges)**
+- [x] **2c. Create image loader (ConceptArt nodes + HAS_IMAGE edges)**
   New file `graph/image_loader.py` — reads `image_manifest.json`, for each downloaded non-skipped image:
   - `MERGE` a `ConceptArt` node: `{id, entity_id, entity_type, image_path, caption, section, width, height}`
   - `MERGE (entity)-[:HAS_IMAGE]->(concept_art)` where entity is matched by `id`
   - Checkpoint-gated per `image_id` so re-runs are idempotent
 
-- [ ] **2d. Wire image loader into main pipeline**
+- [x] **2d. Wire image loader into main pipeline**
   `main.py` — add Step 6 calling `load_images_into_graph()` after existing steps.
 
 ---
