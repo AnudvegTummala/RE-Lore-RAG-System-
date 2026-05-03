@@ -23,6 +23,19 @@ All changes in `pipeline/scraper/`. Must be done before re-running the scraper; 
 - [x] **1d. Pass all new fields from scraper to manifest**
   `scrapers/fandom.py` — pass `section`, `caption`, and entity `tags` into `add_reference()` at the call site.
 
+### Phase 1 — Completed Summary
+
+**Commit:** `eaf3894` — `feat(scraper): enrich image manifest with section, caption, and tags`
+
+**Files changed:** `parsers/common.py`, `utils/manifests.py`, `scrapers/fandom.py`
+
+Each image entry in `image_manifest.json` now carries three new fields:
+- `section` — the article heading the image appeared under (e.g. `"Appearance"`, `"History"`); infobox images are tagged `"Infobox"`.
+- `caption` — real figure caption text extracted from `<figcaption>` / `.thumbcaption` in the HTML. Falls back to empty string if no caption element is found. Kept separate from `alt_text` which remains the raw HTML attribute value.
+- `tags` — entity-level page categories forwarded from the parsed frontmatter (e.g. `["characters", "resident-evil-3", "s-t-a-r-s"]`).
+
+**To take effect:** re-run the scraper. The existing `image_manifest.json` predates these changes and will not have these fields until pages are re-scraped.
+
 ---
 
 ## Phase 2 — Ingestor: Enrich Qdrant Payload + Neo4j Image Nodes
@@ -43,6 +56,19 @@ Depends on Phase 1 manifest fields being populated.
 
 - [x] **2d. Wire image loader into main pipeline**
   `main.py` — add Step 6 calling `load_images_into_graph()` after existing steps.
+
+### Phase 2 — Completed Summary
+
+**Commit:** `3a4d710` — `feat(ingestor): enrich Qdrant payload and add ConceptArt Neo4j nodes`
+
+**Files changed:** `embeddings/image_embedder.py`, `graph/schema.py`, `graph/image_loader.py` (new), `main.py`
+
+- **Qdrant `concept_art` payload** now includes `width`, `height`, `section`, `caption` (prefers real caption over alt_text), and `tags`. The hardcoded `"tags": []` is gone.
+- **Neo4j schema** gains a `concept_art_entity` index on `ConceptArt.entity_id` for fast per-entity image lookups.
+- **`image_loader.py`** (new): reads `image_manifest.json`, `MERGE`s a `ConceptArt` node per downloaded image with all properties, then `MERGE`s a `HAS_IMAGE` edge from the owning entity node. Checkpoint-gated and idempotent — safe to re-run.
+- **`main.py`** pipeline is now 6 steps; image graph loading is Step 6.
+
+**To take effect:** delete `data/state/image_embedder.json` and `data/state/image_loader.json` (if they exist) and re-run the ingestor. No re-scrape needed if the manifest already has the Phase 1 fields; otherwise run the scraper first.
 
 ---
 
