@@ -152,26 +152,61 @@ Enriches the graph with data already extracted by the scraper but currently disc
 
 All changes in `runtime/api/`. Each item is independently deployable.
 
-- [ ] **5a. Parallelize graph_retrieval and vector_retrieval**
+- [x] **5a. Parallelize graph_retrieval and vector_retrieval**
   `graph/workflow.py` — remove the sequential edge `classify_query → graph_retrieval → vector_retrieval`. Replace with a fan-out from `classify_query` to both nodes simultaneously, then a join node before `rerank`. LangGraph supports this natively via multiple `add_edge` calls from the same source.
 
-- [ ] **5b. Bump vector retrieval limit to 15**
+- [x] **5b. Bump vector retrieval limit to 15**
   `graph/nodes/vector_retrieval.py` — change hardcoded `limit=5` to `limit=15`. More candidates into the reranker = better final selection with no extra latency.
 
-- [ ] **5c. Add score threshold to reranker**
+- [x] **5c. Add score threshold to reranker**
   `graph/nodes/rerank.py` — after sorting by score, filter to results above a minimum threshold (e.g. `0.3`) before applying TOP_K. If nothing passes the threshold, keep top-1 as a fallback rather than producing empty results. This prevents weak evidence from being passed to the LLM as if it were valid.
 
-- [ ] **5d. Set LLM temperature**
-  `graph/nodes/generate.py` or `services/llm.py` — set `temperature=0.15` on the ChatGroq instance. Default is ~0.7 which introduces unnecessary variance on factual lore answers.
+- [x] **5d. Set LLM temperature**
+  Already set to `temperature=0.2` in `services/llm.py` from a prior commit. No change needed.
 
-- [ ] **5e. LRU cache on query embeddings**
-  `services/qdrant_service.py` — wrap the `encode()` call with a `functools.lru_cache(maxsize=128)` keyed on the query string. Repeated queries in the same process skip re-encoding entirely.
+- [~] **5e. LRU cache on query embeddings** — skipped. Not needed for this use case.
 
-- [ ] **5f. Enable hybrid search at query time**
-  `services/qdrant_service.py` + `graph/nodes/vector_retrieval.py` — use Qdrant's `query_points` with `prefetch` (dense) + sparse vector, fused via RRF. Requires Phase 3b/3c to have populated sparse vectors. This is the single biggest recall improvement for proper nouns and abbreviations (BSAA, S.T.A.R.S., T-Abyss).
+- [x] **5f. Enable hybrid search at query time**
+  `services/qdrant_service.py` — use Qdrant's `query_points` with `prefetch` (dense) + sparse vector, fused via RRF. Requires Phase 3b/3c to have populated sparse vectors. This is the single biggest recall improvement for proper nouns and abbreviations (BSAA, S.T.A.R.S., T-Abyss).
 
-- [ ] **5g. Improve entity hint extraction in classify node**
+- [x] **5g. Improve entity hint extraction in classify node**
   `graph/nodes/classify.py` — extend `_ENTITY_PATTERN` to also match: all-caps tokens (BSAA, STARS), hyphenated names (T-Abyss, G-Virus), single-letter names, and known abbreviations. Add a deduplicated fallback that lowercases and searches if the strict regex finds nothing.
+
+### Phase 5 — Completed Summary
+
+**Files changed:** `graph/workflow.py`, `graph/nodes/vector_retrieval.py`, `graph/nodes/rerank.py`, `graph/nodes/classify.py`, `services/qdrant_service.py`, `requirements.txt`
+
+**5a — Parallel retrieval (`graph/workflow.py`):**
+- Removed the sequential `classify_query → graph_retrieval → vector_retrieval` chain.
+- Replaced with a fan-out: `classify_query` now has two outgoing edges, one to `graph_retrieval` and one to `vector_retrieval`. Both run concurrently.
+- Both feed into `rerank` via separate edges. LangGraph's fan-in semantics mean `rerank` waits for both branches before executing — no extra synchronisation code needed.
+- Net effect: graph traversal and vector search happen in parallel, reducing query latency by whichever was slower of the two.
+
+**5b — Vector limit (`graph/nodes/vector_retrieval.py`):**
+- `limit=5` → `limit=15`. The cross-encoder reranker now has 3× more candidates to score and select from, improving the quality of the final top-3 with no added network latency.
+
+**5c — Score threshold (`graph/nodes/rerank.py`):**
+- After sorting by cross-encoder score, filters to results with `score >= 0.3`.
+- If nothing clears the threshold, falls back to `[ranked[0][1]]` (top-1 regardless of score) to ensure the LLM always has at least one result to work with rather than returning empty evidence.
+
+**5d — LLM temperature:**
+- Already set to `0.2` in `services/llm.py`. No change required.
+
+**5e — LRU cache:** Skipped per user decision.
+
+**5f — Hybrid search (`services/qdrant_service.py`, `requirements.txt`):**
+- `fastembed==0.4.2` added to `requirements.txt`.
+- `QdrantService` gains a lazy `_bm25: Bm25` instance (same `"Qdrant/bm25"` pre-fitted model used by the ingestor).
+- `_encode_dense()` replaces the old `_encode()`. New `_encode_sparse()` runs BM25 query embedding synchronously (it's CPU-cheap) and returns a `SparseVector`.
+- `search_text()` now calls `client.query_points()` with a `prefetch` list of two sub-queries (dense using `"dense"` named vector, sparse using `"sparse"` named vector, each fetching `limit*2` candidates), fused via `Fusion.RRF`.
+- Falls back to plain `client.search()` on any exception (e.g. pre-Phase-3 collection without named vectors).
+
+**5g — Entity hint extraction (`graph/nodes/classify.py`):**
+- `_ENTITY_PATTERN` replaced with four separate compiled patterns: `_TITLE_CASE` (existing behaviour), `_ALL_CAPS` (BSAA, STARS), `_DOTTED` (S.T.A.R.S., B.O.W.), `_HYPHENATED` (T-Virus, G-Virus, T-Abyss).
+- `_KNOWN_ALIASES` set covers common RE proper nouns that appear fully lowercase in natural queries.
+- `_extract_hints()` runs all four patterns, deduplicates with `dict.fromkeys`, then only checks `_KNOWN_ALIASES` as a fallback if all four patterns returned nothing.
+
+**To take effect:** restart the API server. No database changes needed. Hybrid search requires the `lore_text` collection to have been rebuilt with Phase 3 named vectors — falls back to dense-only if not.
 
 ---
 

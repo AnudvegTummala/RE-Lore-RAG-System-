@@ -25,9 +25,12 @@ def build_graph() -> StateGraph:
     g.add_node("assemble_evidence", assemble_evidence)
     g.add_node("generate_answer", generate_answer)
 
+    # classify_query fans out to both retrievals simultaneously.
+    # LangGraph waits for all incoming edges before running rerank (fan-in).
     g.add_edge(START, "classify_query")
     g.add_edge("classify_query", "graph_retrieval")
-    g.add_edge("graph_retrieval", "vector_retrieval")
+    g.add_edge("classify_query", "vector_retrieval")
+    g.add_edge("graph_retrieval", "rerank")
     g.add_edge("vector_retrieval", "rerank")
     g.add_conditional_edges(
         "rerank",
