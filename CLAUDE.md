@@ -47,10 +47,11 @@ npx tsc --noEmit   # type check
 ### Docker (full stack)
 
 ```bash
+bash scripts/build-base.sh cpu  # build shared base image (once, or after ML dep changes)
 docker compose up -d                                        # start all runtime services (Neo4j, Qdrant, clip-service, api)
 docker compose -f pipeline/docker-compose.yml run --rm ingestor  # run ingestor (requires runtime services up)
 docker compose logs -f api                                  # tail a specific service
-docker compose build api                                    # rebuild one service
+docker compose build api                                    # rebuild one service (fast — inherits re-lore-base)
 bash scripts/reset-db.sh       # wipe Neo4j and Qdrant volumes
 ```
 
@@ -68,11 +69,12 @@ bash scripts/reset-db.sh       # wipe Neo4j and Qdrant volumes
 Every user query runs through a LangGraph `StateGraph` compiled at import time in `runtime/api/app/graph/workflow.py`. All nodes share a single typed state object (`GraphState` in `graph/state.py`).
 
 ```
-START → classify_query → graph_retrieval → vector_retrieval
-                                               ↓ needs_image_search=True  → image_retrieval → assemble_evidence
-                                               ↓ needs_image_search=False ──────────────────→ assemble_evidence
-                                                                                                    → generate_answer → END
+                         ┌→ graph_retrieval ─┐
+START → classify_query ──┤                   ├→ rerank → [image_retrieval →] assemble_evidence → generate_answer → END
+                         └→ vector_retrieval ┘
 ```
+
+`graph_retrieval` and `vector_retrieval` run **in parallel** (fan-out from `classify_query`). LangGraph's fan-in semantics hold `rerank` until both complete.
 
 **Key detail:** `compiled_graph` is a module-level singleton created at import. Adding or renaming nodes requires editing `build_graph()` in `workflow.py` and restarting the server.
 
@@ -80,17 +82,20 @@ START → classify_query → graph_retrieval → vector_retrieval
 | Node | File | What it does |
 |---|---|---|
 | `classify_query` | `nodes/classify.py` | Regex entity extraction + sets `needs_image_search` flag |
-| `graph_retrieval` | `nodes/graph_retrieval.py` | Cypher 2-hop traversal on Neo4j using entity hints; queries `e.title` (not `e.name`) |
-| `vector_retrieval` | `nodes/vector_retrieval.py` | sentence-transformers embed → Qdrant `lore_text` top-5 |
-| `image_retrieval` | `nodes/image_retrieval.py` | CLIP embed via clip-service → Qdrant `concept_art` filtered by entity_ids from text_results |
+| `graph_retrieval` | `nodes/graph_retrieval.py` | Cypher 1-hop traversal on Neo4j; matches `e.title` OR `e.name` (case-insensitive) |
+| `vector_retrieval` | `nodes/vector_retrieval.py` | Hybrid dense+BM25 search → Qdrant `lore_text` top-15 candidates |
+| `rerank` | `nodes/rerank.py` | Cross-encoder scores all candidates; keeps results ≥0.3 threshold (top-3 max) |
+| `image_retrieval` | `nodes/image_retrieval.py` | CLIP embed → Qdrant `concept_art` filtered to visual entity_ids from graph+text results |
 | `assemble_evidence` | `nodes/assemble.py` | Merge results → `evidence` string; deduplicates by (entity_id, section); skips sections with <80 meaningful chars |
 | `generate_answer` | `nodes/generate.py` | ChatGroq with `streaming=True` → `answer` |
 
-`classify_query` uses a **regex heuristic** (capitalised words for entities, keyword list for visual terms) — not spaCy. The `needs_image_search` flag is the only conditional edge in the graph.
+`classify_query` uses a **regex heuristic** (four patterns: title-case, ALL_CAPS, dotted abbreviations, hyphenated names; plus known RE aliases) — not spaCy. The `needs_image_search` flag is the only conditional edge in the graph.
 
 **Lowercase queries:** When the query has no capitalised entity hints, `graph_retrieval` returns nothing. `_serialise_graph` in `routers/query.py` falls back to building graph nodes from `text_results` entity_ids so the Knowledge Graph panel always shows something.
 
-**Image retrieval filtering:** `image_retrieval` restricts the CLIP vector search to `entity_ids` already identified by `vector_retrieval`. This prevents CLIP from returning visually similar images of the wrong character.
+**Image retrieval filtering:** `image_retrieval` builds its entity filter from two sources: (1) entity_ids extracted from `graph_results` nodes filtered to visual prefixes (`character-*`, `enemy-*`, `organization-*`), and (2) text_results entity_ids with the same prefix filter. Graph ids take priority because they are the verified Neo4j matches. Game/location/weapon entity_ids are explicitly excluded — their images are cover art and screenshots, not character concept art.
+
+**Graph serialisation cap:** `_serialise_graph` limits output to 60 nodes and trims dangling edges. Without this cap, a 1-hop APOC subgraph across 18k+ MENTIONS edges returns hundreds of nodes and crashes the Cytoscape renderer.
 
 ### SSE Streaming
 
@@ -153,7 +158,12 @@ Both collections have a keyword payload index on `entity_id` for efficient filte
 
 ## Known Gotchas
 
-- **CLIP service is slow to start** — model load takes 2–3 min. Wait for `health: healthy` in `docker ps` before running the ingestor, otherwise image embedding will fail with connection refused.
+- **Build the base image first** — `api` and `clip-service` both start with `FROM re-lore-base`. Run `bash scripts/build-base.sh cpu` before `docker compose build` or the build fails with "image not found".
+- **Parallel nodes must return partial state** — `graph_retrieval` and `vector_retrieval` run concurrently. Each must return only the keys it writes (`{"graph_results": ...}` and `{"text_results": ...}`). Returning `{**state, ...}` (full state spread) causes `InvalidUpdateError: At key 'query': Can receive only one value per step` because both nodes write to the same channel simultaneously.
+- **Reranker deadlock on CPU Docker** — `OMP_NUM_THREADS=1` and `TOKENIZERS_PARALLELISM=false` must be set in the api container environment (already in `docker-compose.yml`). Without these, PyTorch/OpenMP spawns threads inside the asyncio worker and deadlocks. `torch.set_num_threads(1)` alone does not suppress the OpenMP thread pool.
+- **Qdrant named vector schema** — `lore_text` uses named vectors (`"dense"` and `"sparse"`). The old `client.search(query_vector=vector)` API returns 400 Bad Request against this schema. The service uses `client.query_points()` with `FusionQuery`. After wiping and re-ingesting, if the api container was not rebuilt it will use the old code and fail silently — rebuild with `docker compose build api`.
+- **Scraper checkpoint at `/data/checkpoints/`** — the scraper checkpoint lives at `/data/checkpoints/scraper_state.json`. The ingestor checkpoints live at `/data/state/`. These are different directories. Wiping only `data/state/` leaves scraper progress intact; wiping only `data/checkpoints/` forces a full re-scrape.
+- **CLIP service is slow to start** — model load takes 2–3 min. Wait for `health: healthy` in `docker ps` before running the ingestor, otherwise image embedding will fail with connection refused. With the base image, the weights are pre-baked and startup is near-instant.
 - **Qdrant Docker image has no wget or curl** — the healthcheck uses `bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'` instead of a HTTP check.
 - **api pip resolver times out with loose version bounds** — `langgraph>=0.2` style specs cause `ResolutionTooDeep` after 20 min in pip 24.x. All langchain/langgraph deps are pinned to exact versions in `runtime/api/requirements.txt`.
 - **clip-service Debian package rename** — `libgl1-mesa-glx` was renamed to `libgl1` and `libglib2.0-0` to `libglib2.0-0t64` in Debian Trixie (the base used by `python:3.11-slim`).
@@ -165,3 +175,4 @@ Both collections have a keyword payload index on `entity_id` for efficient filte
 - **Empty body sections are not a parser bug** — many wiki articles have stub sections (e.g. `## History` with no content). The parser correctly produces empty sections for these.
 - **Category count mismatch is expected** — weapons (39), viruses (94), games (105) are just small categories on the wiki. The `MAX_PAGES` cap only hits the large categories.
 - **Neo4j password must match across both `.env` and `pipeline/.env`** — if Neo4j was previously initialized with a different password, wipe the volume: `docker volume rm re-lore-rag-system-_neo4j_data` or reset via cypher-shell.
+- **Some characters land in `enemies/` not `characters/`** — the Fandom BFS can discover a character through the "Creatures" category first (e.g. Jill Valentine as RE5 boss). The entity_id will be `enemy-jill-valentine` with `entity_type: enemy`. The image retrieval entity_id prefix filter (`character-*`, `enemy-*`) handles both, so images are still found correctly.

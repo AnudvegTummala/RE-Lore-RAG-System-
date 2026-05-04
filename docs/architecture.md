@@ -121,9 +121,13 @@ The regex approach was chosen over spaCy because spaCy's NER models are not trai
 
 Reads `entity_hints`. Writes `graph_results`.
 
-Runs a Cypher query on Neo4j using APOC `subgraphAll` for a 2-hop traversal from any node whose `title` property matches an entity hint (case-insensitive). Returns all nodes and relationships within 2 hops of the matched entities. The traversal captures relationship chains that vector search cannot: Wesker → MEMBER_OF → Umbrella → CREATED_BY ← T-Virus is a 2-hop chain that connects entities without any of the intermediate text explicitly appearing in a retrieved chunk.
+Runs a Cypher query on Neo4j using APOC `subgraphAll` for a **1-hop** traversal from any node whose `title` OR `name` property matches an entity hint (case-insensitive). Returns all nodes and relationships within 1 hop of the matched entities. The depth is deliberately 1 rather than 2: with 18,000+ `MENTIONS` edges in the graph, 2-hop traversal from 5 seed entities routinely returned 150–200 nodes, which caused the Cytoscape renderer to hang. 1-hop returns direct connections (typically 10–40 nodes) while still capturing the most relevant relationships.
 
-When the query has no capitalised entity hints, graph retrieval returns nothing. The `_serialise_graph` function in `routers/query.py` falls back to building graph nodes from `text_results` entity_ids so the Knowledge Graph panel always shows something.
+The Cypher also matches on `e.name` in addition to `e.title` because some entities (primarily legacy nodes) store their identifier in `name` rather than `title`. Matching both prevents silent misses.
+
+`_serialise_graph` in `routers/query.py` applies a hard cap of 60 nodes and trims dangling edges as a safety net, even after the 1-hop depth reduction.
+
+When the query has no capitalised entity hints, graph retrieval returns nothing. The `_serialise_graph` function falls back to building graph nodes from `text_results` entity_ids so the Knowledge Graph panel always shows something.
 
 **`vector_retrieval`** (`nodes/vector_retrieval.py`)
 
@@ -145,9 +149,18 @@ Scores are sorted descending. Results above a 0.3 threshold are kept. If nothing
 
 **`image_retrieval`** (`nodes/image_retrieval.py`)
 
-Reads `query`, `needs_image_search`, and `text_results` (for entity_ids). Writes `image_results`.
+Reads `query`, `needs_image_search`, `graph_results`, and `text_results`. Writes `image_results`.
 
-Only runs when `needs_image_search=True`. Calls the CLIP service's `POST /embed/text` endpoint to embed the query text into CLIP's 512-dim embedding space. Searches the Qdrant `concept_art` collection filtered to `entity_ids` already identified by `vector_retrieval`. The filter is critical: without it, CLIP would return visually similar images of the wrong character (a different character in a similar pose or color palette). Filtering by entity_ids from text results anchors the image search to entities the text retrieval already confirmed are relevant to the query.
+Only runs when `needs_image_search=True`. Calls the CLIP service's `POST /embed/text` endpoint to embed the query text into CLIP's 512-dim embedding space. Searches the Qdrant `concept_art` collection filtered to a resolved set of entity_ids.
+
+**Entity filter construction** (order of priority):
+1. Extract all entity_ids from `graph_results` nodes and filter to visual prefixes: `character-*`, `enemy-*`, `organization-*`. These are the verified Neo4j matches for the query hints.
+2. Supplement with entity_ids from `text_results` that share the same visual prefixes.
+3. If neither source yields any visual entity_ids, fall back to all entity_ids from `text_results`.
+
+`game-*`, `location-*`, `weapon-*`, and `virus-*` entity_ids are excluded explicitly — their images are game cover art and location screenshots, not character concept art. Without this filter, a query for "What does Jill Valentine look like?" would retrieve cover art for every game she appears in, because those game entities dominate the text_results.
+
+The graph_results source is preferred over text_results because it reliably identifies the correct entity regardless of how the wiki classified the character. For example, the main Jill Valentine page has `entity_id: enemy-jill-valentine` (classified as enemy because the BFS found her through the "Creatures" category). The prefix filter `enemy-*` matches her correctly, and the graph_results always contain her node when "Jill Valentine" appears in the query.
 
 **`assemble_evidence`** (`nodes/assemble.py`)
 
@@ -167,6 +180,8 @@ Calls the Groq API via `ChatGroq` with `streaming=True` and `temperature=0.2`. L
 
 The rationale: graph traversal and vector search are completely independent operations — graph retrieval uses `entity_hints` and vector retrieval uses `query`. Running them sequentially would waste time waiting for whichever finishes first. The reranker benefits from having both sets of candidates, which is why it sits after both retrieval branches rather than after just one.
 
+**Critical implementation constraint:** Parallel nodes must return only the keys they write — not a full state spread. `graph_retrieval` must return `{"graph_results": records}`, not `{**state, "graph_results": records}`. When two nodes run concurrently and both return the full state (including `query`, `entity_hints`, etc.), LangGraph raises `InvalidUpdateError: At key 'query': Can receive only one value per step` because both writes land in the same channel in the same step. Returning only the changed key avoids the conflict.
+
 ### Conditional Image Search
 
 The `_route_after_rerank` function checks `state["needs_image_search"]`. If True, routes to `image_retrieval` then `assemble_evidence`. If False, routes directly to `assemble_evidence`. This prevents a CLIP service call and image vector search on every text-only lore query. CLIP embedding and image search add latency and are irrelevant for questions like "What is Leon Kennedy's backstory?" — only visual queries like "Show me concept art of Jill Valentine" should trigger them.
@@ -185,9 +200,9 @@ The `fastembed` `Bm25("Qdrant/bm25")` pre-fitted model requires no corpus-level 
 
 ### Graph Retrieval
 
-Neo4j stores entity relationships as typed edges: `APPEARS_IN`, `MEMBER_OF`, `ENCOUNTERS`, `INFECTED_WITH`, `CREATED_BY`, `LOCATED_IN`, `FEATURED_IN`, `HAS_IMAGE`, `DESCRIBED_IN`, `PRECEDES`, `SUCCEEDS`, and `MENTIONS`. The APOC `subgraphAll` function returns the full subgraph within 2 hops of a matched entity.
+Neo4j stores entity relationships as typed edges: `APPEARS_IN`, `MEMBER_OF`, `ENCOUNTERS`, `INFECTED_WITH`, `CREATED_BY`, `LOCATED_IN`, `FEATURED_IN`, `HAS_IMAGE`, `DESCRIBED_IN`, `PRECEDES`, `SUCCEEDS`, and `MENTIONS`. The APOC `subgraphAll` function returns the subgraph within 1 hop of each matched entity (up to 30 relationship traversals per seed entity).
 
-This captures relationship chains that pure vector search misses. "Who created the T-Virus?" — the path is `T-Virus ← CREATED_BY ← Umbrella`, a 1-hop traversal. "What is Wesker's connection to the T-Virus?" — the path is `Wesker → MEMBER_OF → Umbrella ← CREATED_BY ← T-Virus`, a 2-hop traversal. These chains are explicit in the graph and cannot be reliably inferred by embedding-based similarity alone.
+1-hop traversal captures the most directly relevant relationships. "Who created the T-Virus?" — the path is `T-Virus ← CREATED_BY ← Umbrella`, a 1-hop traversal found directly. The depth was reduced from 2 to 1 because the 18,000+ `MENTIONS` edges make 2-hop traversal produce 150–200 nodes per query, crashing the graph renderer. 1-hop still covers the majority of meaningful relationship queries.
 
 The `MENTIONS` relationship (added in Phase 4) provides a second layer of connectivity extracted from prose. When a character's biography mentions another character or location by name, a `MENTIONS` edge is created. This captures co-references that are real but not modelled in the structured infobox data.
 
