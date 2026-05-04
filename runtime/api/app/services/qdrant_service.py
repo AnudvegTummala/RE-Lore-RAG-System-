@@ -63,26 +63,17 @@ class QdrantService:
         sparse_vector = self._encode_sparse(query)
         client = self._get_client()
 
-        try:
-            results = await client.query_points(
-                collection_name=collection,
-                prefetch=[
-                    Prefetch(query=dense_vector,  using="dense",  limit=limit * 2),
-                    Prefetch(query=sparse_vector, using="sparse", limit=limit * 2),
-                ],
-                query=FusionQuery(fusion=Fusion.RRF),
-                limit=limit,
-                with_payload=True,
-            )
-            return [{"score": h.score, **h.payload} for h in results.points]
-        except Exception:
-            # Named vectors not available — fall back to plain dense search
-            hits = await client.search(
-                collection_name=collection,
-                query_vector=dense_vector,
-                limit=limit,
-            )
-            return [{"score": h.score, **h.payload} for h in hits]
+        results = await client.query_points(
+            collection_name=collection,
+            prefetch=[
+                Prefetch(query=dense_vector,  using="dense",  limit=limit * 2),
+                Prefetch(query=sparse_vector, using="sparse", limit=limit * 2),
+            ],
+            query=FusionQuery(fusion=Fusion.RRF),
+            limit=limit,
+            with_payload=True,
+        )
+        return [{"score": h.score, **h.payload} for h in results.points]
 
     async def search_by_vector(
         self,
