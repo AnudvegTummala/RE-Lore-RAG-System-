@@ -34,6 +34,7 @@ _INDEXES = [
     "CREATE INDEX weapon_title IF NOT EXISTS FOR (n:Weapon) ON (n.title)",
     "CREATE INDEX lore_chunk_entity IF NOT EXISTS FOR (n:LoreChunk) ON (n.entity_id)",
     "CREATE INDEX lore_chunk_section IF NOT EXISTS FOR (n:LoreChunk) ON (n.section)",
+    "CREATE INDEX concept_art_entity IF NOT EXISTS FOR (n:ConceptArt) ON (n.entity_id)",
 ]
 
 

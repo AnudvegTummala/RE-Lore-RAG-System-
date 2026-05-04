@@ -1,6 +1,9 @@
+import logging
 import re
 
 from app.graph.state import GraphState
+
+logger = logging.getLogger(__name__)
 
 # Minimum meaningful characters in parent_text after stripping whitespace and
 # bracket-only tokens like "[ 12 ]". Sections that are purely reference lists
@@ -58,6 +61,11 @@ def assemble_evidence(state: GraphState) -> GraphState:
         )
 
     evidence = "\n\n".join(parts) if parts else "No relevant lore found."
+    source_count = len(text_parts) + (1 if graph_results else 0) + (1 if image_results else 0)
+    logger.info(
+        "assemble: %d sources, %d chars of evidence",
+        source_count, len(evidence),
+    )
     return {**state, "evidence": evidence}
 
 

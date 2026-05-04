@@ -14,6 +14,7 @@ yet completed.
 
 import logging
 import os
+import re
 from pathlib import Path
 
 from neo4j import AsyncGraphDatabase
@@ -51,6 +52,23 @@ _MERGE_NODE = (
     "    n.scraped_at = $scraped_at, "
     "    n.tags = $tags"
 )
+
+# Writes all infobox key-value pairs as node properties. Keys are
+# pre-sanitised in Python; SET n += map merges without touching other props.
+_SET_INFOBOX = "MATCH (n:{label} {{id: $id}}) SET n += $props"
+
+
+def _sanitise_infobox(infobox: dict) -> dict:
+    """Return a copy of infobox with keys safe for use as Neo4j property names."""
+    out = {}
+    for k, v in infobox.items():
+        # lowercase, replace runs of non-alphanumeric chars with underscore
+        safe_key = re.sub(r"[^a-z0-9]+", "_", k.lower()).strip("_")
+        if not safe_key:
+            continue
+        # Store as string so mixed-type infobox values don't upset Neo4j
+        out[safe_key] = str(v) if not isinstance(v, (bool, int, float, list)) else v
+    return out
 
 
 async def load_graph() -> dict:
@@ -90,6 +108,15 @@ async def load_graph() -> dict:
                         scraped_at=fm.get("scraped_at", ""),
                         tags=fm.get("tags", []),
                     )
+                    infobox = fm.get("infobox") or {}
+                    if infobox:
+                        props = _sanitise_infobox(infobox)
+                        if props:
+                            await session.run(
+                                _SET_INFOBOX.format(label=label),
+                                id=fm["id"],
+                                props=props,
+                            )
                     checkpoint.mark_done(key, phase="nodes")
                     summary["nodes_created"] += 1
                     docs.append({"frontmatter": fm, "body": body, "source_file": key})

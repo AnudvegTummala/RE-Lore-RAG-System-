@@ -31,7 +31,13 @@ async def rerank(state: GraphState) -> GraphState:
             None, _cross_encoder.predict, pairs
         )
         ranked = sorted(zip(scores, text_results), key=lambda x: x[0], reverse=True)
-        reranked = [r for _, r in ranked[:_TOP_K]]
+        above_threshold = [r for score, r in ranked if score >= 0.3]
+        reranked = (above_threshold or [ranked[0][1]])[:_TOP_K]
+        top_score = ranked[0][0] if ranked else 0.0
+        logger.info(
+            "rerank: %d candidates → %d above threshold 0.3 (top score: %.2f), kept %d",
+            len(text_results), len(above_threshold), top_score, len(reranked),
+        )
         return {**state, "text_results": reranked}
     except Exception:
         logger.exception("rerank failed — returning text_results unchanged")

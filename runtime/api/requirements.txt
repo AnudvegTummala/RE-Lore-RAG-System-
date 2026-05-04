@@ -8,6 +8,7 @@ langsmith==0.7.37
 neo4j==5.21.0
 qdrant-client==1.11.0
 sentence-transformers==3.1.1
+fastembed==0.4.2
 httpx==0.27.2
 pydantic==2.9.2
 pydantic-settings==2.5.2

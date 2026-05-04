@@ -76,6 +76,7 @@ services:
         condition: service_healthy
     volumes:
       - ./data:/data:ro
+      - ./data/logs:/data/logs
     networks:
       - re-lore-net
     healthcheck:
