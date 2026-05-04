@@ -24,6 +24,8 @@ Resident Evil Lore Oracle is a locally hosted, Dockerized lore exploration syste
 | Scraper | Python + httpx + BeautifulSoup |
 | Containerization | Docker Compose |
 
+> **What changed:** LLM changed from `llama3-70b-8192` to `llama-3.3-70b-versatile` — Groq decommissioned the former model in early 2026. The switch was a one-line `.env` change via `GROQ_MODEL`. Two stack entries were added post-v1: `sentence-transformers` (made explicit — it was implicit in the original) and `fastembed==0.4.2` for BM25 sparse encoding. A cross-encoder reranker (`cross-encoder/ms-marco-MiniLM-L-6-v2`) was added in the retrieval quality improvement phase. A shared `re-lore-base` Docker image (`runtime/base/`) was introduced to avoid re-downloading 1.5 GB of ML deps on every service rebuild.
+
 ---
 
 ## Repository Structure
@@ -204,9 +206,13 @@ re-lore-oracle/
     └── export-snapshots.sh
 ```
 
+> **What changed:** Several paths differ from the plan. `data/checkpoints/` became `data/state/` — the checkpoint system was implemented using a simpler flat-file pattern under `data/state/`. `runtime/base/` is new — the shared Docker base image directory added later for build optimisation. `scripts/build-base.sh` and `scripts/push-base.sh` are new. In the ingestor, `graph/image_loader.py` and `graph/mention_extractor.py` are new files added during the post-v1 improvement phases. The `graph/entity_extractor.py` and `graph/relationship_builder.py` files listed in the plan are implemented inside `graph/loader.py` rather than as separate modules — the structure was simplified during implementation.
+
 ---
 
 ## Implementation Decisions & Deviations from Original Plan
+
+> **Note:** This section was written during development as deviations were discovered and fixed — not post-hoc. It represents the real engineering log of what changed and why. Read it alongside the original plan sections to understand the full picture.
 
 ### Scraper
 
@@ -267,6 +273,8 @@ class GraphState(TypedDict):
 | `assemble_evidence` | `nodes/assemble.py` | `graph_results`, `text_results`, `image_results` | `evidence` | Merges and deduplicates all retrieved results. Formats them into a single context string for the LLM prompt. |
 | `generate_answer` | `nodes/generate.py` | `query`, `evidence` | `answer`, `retrieval_adequate` | Sends evidence + query to Groq via `ChatGroq`. Streams the response. |
 
+> **What changed:** A `rerank` node was added between retrieval and assembly. It reads `query` and `text_results`, scores all (query, passage) pairs with a cross-encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`), applies a 0.3 score threshold (falling back to top-1 if nothing clears it), and keeps at most 3 results. The `image_retrieval` node was also updated: it now reads `text_results` entity_ids and filters the CLIP vector search to those entities, preventing wrong-character image matches. `classify_query` uses four regex patterns (`_TITLE_CASE`, `_ALL_CAPS`, `_DOTTED`, `_HYPHENATED`) plus a `_KNOWN_ALIASES` set rather than spaCy — spaCy's NER models are not trained on RE-domain proper nouns (S.T.A.R.S., T-Abyss, BSAA) so accuracy would be no better.
+
 ### Graph Wiring
 
 Defined in `runtime/api/app/graph/workflow.py`:
@@ -282,11 +290,20 @@ START
                                                                                       └─► END
 ```
 
+> **What changed — parallel fan-out:** The original sequential pipeline (classify → graph → vector → conditional image → assemble → generate) was refactored to a parallel fan-out after a retrieval quality improvement phase. The current pipeline:
+> ```
+> START → classify_query ──┬──► graph_retrieval ──┐
+>                          └──► vector_retrieval ──┴──► rerank → (conditional) → assemble → generate → END
+> ```
+> Graph retrieval and vector retrieval now run concurrently — they are independent operations that both feed the reranker. A `rerank` node (cross-encoder) was inserted between retrieval and assembly. The reranker needs candidates from BOTH retrieval branches before it can score, which is why the fan-in sits before rerank rather than before assemble. The original sequential design would have required running the reranker twice or losing graph results.
+
 ### Conditional Edges
 
 **After `vector_retrieval`:** Router checks `state["needs_image_search"]`. Routes to `image_retrieval` if True, directly to `assemble_evidence` if False. This skips CLIP embedding for text-only lore queries.
 
 **After `generate_answer` (optional):** Router checks `state["retrieval_adequate"]`. If False, routes back to `graph_retrieval` with a broadened traversal for a retry. Implement this loop in Phase 2 polish if time allows.
+
+> **What changed:** The retry loop after `generate_answer` ("if retrieval_adequate=False, route back to graph_retrieval") was planned but not implemented. `retrieval_adequate` is currently set by a simple `len(evidence) > 50` check — a meaningful confidence score using reranker output is tracked as future improvement F1. The image routing conditional moved from after `vector_retrieval` to after `rerank` when the fan-out was introduced.
 
 ### Streaming
 
@@ -521,6 +538,8 @@ Deliverable: Clean repo scaffold with working container skeleton.
 
 Deliverable: `data/raw/markdown/` corpus and `data/raw/images/` image corpus.
 
+> **What changed:** See the "Implementation Decisions" section above for the full scraper deviation log — Cloudflare bypass, URL discovery via API, film filtering, Wikipedia rewrite, etc. All deviations from the planned scraper are documented there as they were discovered during implementation.
+
 ### Phase 3 — Ingestor Pipeline (Dev 2)
 
 - Implement markdown loader and frontmatter parser
@@ -532,6 +551,8 @@ Deliverable: `data/raw/markdown/` corpus and `data/raw/images/` image corpus.
 - All steps idempotent via checkpoint; produce summary log at completion
 
 Deliverable: Populated Neo4j and Qdrant volumes ready for runtime.
+
+> **What changed:** Checkpoints were implemented at `data/state/` rather than `data/checkpoints/` as listed in the structure. The hierarchical parent-child chunking was implemented as planned, with one addition: sentence-level overlap at chunk boundaries (the last sentence of each child chunk is carried forward as the start of the next) to prevent context loss at boundaries.
 
 ### Phase 4 — CLIP Service (Dev 1)
 
@@ -558,6 +579,8 @@ Deliverable: Working embedding service container.
 - Call `graph.compile()` and export as `compiled_graph`
 
 Deliverable: Fully wired and compiled LangGraph workflow, unit tested per node.
+
+> **What changed:** spaCy was planned for entity extraction (`classify_query`) but replaced with a regex heuristic. Reason: spaCy's standard NER models are trained on general English and would miss or misclassify RE-specific proper nouns like S.T.A.R.S., T-Abyss, T-Veronica, and BSAA. The regex approach — four patterns covering title-case, ALL-CAPS, dotted, and hyphenated names plus a `_KNOWN_ALIASES` fallback set — is explicitly designed for this domain vocabulary and performs better. The `compiled_graph` module-level singleton pattern was retained as planned.
 
 ### Phase 6 — FastAPI Backend (Dev 1)
 
@@ -671,6 +694,15 @@ Step 5 should happen early. Both developers need to agree on the `GraphState` sh
 | Data volume too large for timeline | Medium | Prioritize major entities and mainline games first |
 | Frontend graph too cluttered | Medium | Return focused subgraphs, not global graph |
 
+> **Risk resolutions (post-implementation):**
+>
+> - **"LangGraph streaming harder than expected"** — Resolved. `astream_events(version="v2")` worked cleanly. The `on_chat_model_stream` and `on_chain_end` event types gave exactly the streaming primitives needed with no custom plumbing.
+> - **"needs_image_search too aggressive"** — Partially resolved. The four-pattern regex classifier and `_KNOWN_ALIASES` improved entity extraction precision. Full NER-based alias resolution (F2) is deferred.
+> - **"Scraper HTML structure breaks"** — Resolved differently. The problem was not HTML structure changes but Cloudflare blocking. Solved by switching to `api.php?action=parse`.
+> - **"Noisy scraped text"** — Resolved. Two-layer film/non-canon filtering in the Fandom scraper, empty body section handling in the assembler.
+> - **"LLM hallucination"** — Mitigated. The cross-encoder reranker with a 0.3 score threshold prevents weak evidence from reaching the LLM. A proper `retrieval_adequate` confidence flag is deferred as F1.
+> - **"Slow end-to-end runtime"** — Addressed. Parallel retrieval fan-out reduces latency. `needs_image_search` flag skips CLIP for text-only queries.
+
 ---
 
 ## Acceptance Criteria
@@ -686,6 +718,19 @@ Step 5 should happen early. Both developers need to agree on the `GraphState` sh
 - [ ] Image search is verifiably skipped for text-only queries
 - [ ] Frontend is stable and presentable for live demo
 - [ ] GitHub history shows branch-based collaboration
+
+> **Status (post-implementation):**
+> - [x] Repository structured and documented — architecture.md, data-model.md, api-contract.md, development.md, improvement-plan.md
+> - [x] Scraper produces markdown corpus, images, and manifests — `eaf3894`
+> - [x] Ingestor loads Neo4j and Qdrant successfully — `3a4d710`, `ef098e3`, `8fe1cce`
+> - [x] LangGraph workflow compiles without errors
+> - [ ] Each node has passing unit tests — partial; classify node tested, full coverage pending
+> - [x] Runtime stack starts with one command via Docker Compose
+> - [x] User can ask a lore question and receive a grounded streamed answer
+> - [x] Response includes sources, graph entities, and images when applicable
+> - [x] Image search verifiably skipped for text-only queries
+> - [x] Frontend stable and presentable for demo
+> - [x] GitHub history shows branch-based collaboration
 
 ---
 
@@ -704,3 +749,30 @@ Use these to validate the full pipeline:
 - What enemies are related to Tyrant lineage?
 
 Verify during integration that the first group sets `needs_image_search=True` and the second sets it `False`.
+
+---
+
+## Post-v1 Improvement Phases
+
+After the initial v1 build was complete, five improvement phases were implemented on the `feature/rag-quality-improvements` branch, plus a logging overhaul and Docker build optimisation:
+
+### Phase 1 — Scraper: Image Manifest Enrichment
+Each image entry in `image_manifest.json` now carries `section` (the article heading the image appeared under), `caption` (real figure caption text, distinct from alt_text), and `tags` (entity-level page categories). Commit: `eaf3894`.
+
+### Phase 2 — Ingestor: Qdrant Payload + ConceptArt Neo4j Nodes
+`concept_art` Qdrant payload enriched with `width`, `height`, `section`, `caption`, `tags`. New `graph/image_loader.py` creates `ConceptArt` nodes and `HAS_IMAGE` edges in Neo4j from the image manifest. Commit: `3a4d710`.
+
+### Phase 3 — Chunk Overlap + BM25 Hybrid Search Foundation
+Sentence-level overlap added to the chunker to prevent context loss at boundaries. `lore_text` Qdrant collection restructured with named vectors: `"dense"` (all-MiniLM-L6-v2, 384-dim) and `"sparse"` (BM25 via fastembed). Each chunk is now upserted with both vector types. **Note:** the `lore_text` collection must be deleted and recreated for this to take effect — Qdrant does not allow in-place vector config changes. Commit: `ef098e3`.
+
+### Phase 4 — Graph Enrichment: Infobox Properties + MENTIONS Relationships
+Infobox fields from frontmatter are now written as individual Neo4j node properties (sanitised key names via `_sanitise_infobox()`). New `graph/mention_extractor.py` scans entity body text for co-references and creates `MENTIONS` edges between nodes using whole-word regex matching, longest-title-first to prevent substring false positives. Commit: `8fe1cce`.
+
+### Phase 5 — Runtime API: Retrieval Quality
+Parallel fan-out for graph and vector retrieval. Vector retrieval limit raised from 5 to 15 candidates. Cross-encoder reranker with 0.3 score threshold (top-1 fallback). Hybrid BM25+dense search at query time via `query_points` with RRF fusion. Four-pattern entity hint extraction in classify node. Commit: `d6a7f12`.
+
+### Logging Overhaul
+Rotating file handlers (`RotatingFileHandler`, 10 MB limit, 5 backups) added to all three Python services (api, scraper, ingestor), writing to `/data/logs/`. Per-query trace logging across all 7 LangGraph nodes. Docker Compose updated with a separate read-write `/data/logs` mount alongside the read-only corpus mount. Commit: `7be7594`.
+
+### Docker Build Optimisation
+Shared `re-lore-base` image (`runtime/base/`) eliminates redundant torch downloads. `TORCH_DEVICE` build argument with auto GPU detection (`nvidia-smi` check at build time, CPU fallback). BuildKit pip cache mounts on all Dockerfiles. GHCR image tagging for pull-instead-of-build workflow. `scripts/build-base.sh` and `scripts/push-base.sh` added. Committed on `feature/docker-build-optimisation`.

@@ -1,53 +1,67 @@
 # RE Lore Oracle
 
-A locally hosted, Dockerized lore exploration system for the Resident Evil franchise. Scrapes wiki data offline, stores structured entity relationships in Neo4j and vector embeddings in Qdrant, and serves queries through a LangGraph-orchestrated RAG pipeline exposed via FastAPI. The frontend is React + TypeScript + Tailwind with a Cytoscape knowledge graph panel, streaming chat, and concept art gallery.
+A locally hosted, Dockerized lore exploration system for the Resident Evil franchise. Scrapes wiki data offline, stores structured entity relationships in Neo4j and vector embeddings in Qdrant, and answers questions through a LangGraph-orchestrated RAG pipeline exposed via FastAPI. The frontend is React + TypeScript + Tailwind with a Cytoscape knowledge graph panel, streaming chat, and concept art gallery.
 
 ## Stack
 
-| Layer | Technology |
-|---|---|
-| Frontend | React 18 + TypeScript + Vite + Tailwind CSS + Cytoscape.js |
-| Backend API | FastAPI |
-| RAG Orchestrator | LangGraph |
-| LLM | Groq API (`llama-3.3-70b-versatile`) via langchain-groq |
-| Graph DB | Neo4j 5 + APOC |
-| Vector DB | Qdrant |
-| Image Embeddings | OpenCLIP `ViT-B-32` (isolated CLIP service) |
-| Text Embeddings | `all-MiniLM-L6-v2` via sentence-transformers |
-| Scraper | Python + httpx + BeautifulSoup |
-| Containerization | Docker Compose |
+| Layer            | Technology                                                       |
+| ---------------- | ---------------------------------------------------------------- |
+| Frontend         | React 18 + TypeScript + Vite + Tailwind CSS + Cytoscape.js       |
+| Backend API      | FastAPI                                                          |
+| RAG Orchestrator | LangGraph                                                        |
+| LLM              | Groq API (`llama-3.3-70b-versatile`) via langchain-groq          |
+| Graph DB         | Neo4j 5 + APOC                                                   |
+| Vector DB        | Qdrant (hybrid dense + BM25 sparse)                              |
+| Text Embeddings  | `all-MiniLM-L6-v2` via sentence-transformers                     |
+| Reranker         | `cross-encoder/ms-marco-MiniLM-L-6-v2` via sentence-transformers |
+| Image Embeddings | OpenCLIP `ViT-B-32` (isolated CLIP service)                      |
+| Scraper          | Python + httpx + BeautifulSoup                                   |
+| Containerization | Docker Compose                                                   |
 
-## Quick Start
-
-### Prerequisites
+## Prerequisites
 
 - Docker and Docker Compose v2
 - A [Groq API key](https://console.groq.com/)
+
+## Quick Start
 
 ### 1. Configure environment
 
 ```bash
 cp .env.example .env
 # Set GROQ_API_KEY and NEO4J_PASSWORD
-```
 
-### 2. Start the runtime services
-
-```bash
-bash scripts/runtime-up.sh
-```
-
-### 3. Run the data pipeline (first time only)
-
-Scrapes and ingests the RE wiki corpus into Neo4j and Qdrant. Runtime services must be running first.
-
-```bash
 cp pipeline/.env.example pipeline/.env
-# Set NEO4J_PASSWORD (same as .env), leave URLs pointing at localhost
+# Set NEO4J_PASSWORD (same value), leave URLs pointing at localhost
+```
+
+> **TORCH_DEVICE** in `.env` controls which PyTorch variant is used: `auto` detects a GPU via `nvidia-smi` and falls back to CPU. Override to `cpu` or `cuda` if auto-detection does not work for your setup. On Mac with Docker Desktop, `auto` always resolves to `cpu` because MPS is not available inside Linux containers.
+
+### 2. Build the shared base image
+
+The `api` and `clip-service` containers inherit from a shared base image that bundles PyTorch, sentence-transformers, OpenCLIP, and fastembed. This must be built once before the runtime stack:
+
+```bash
+bash scripts/build-base.sh
+```
+
+### 3. Start the runtime services
+
+```bash
+docker compose up -d
+```
+
+Wait until `docker ps` shows `clip-service` as `healthy` (model load takes 3–6 minutes).
+
+### 4. Run the data pipeline (first time only)
+
+Scrapes the RE wiki and ingests the corpus into Neo4j and Qdrant. Runtime services must be running first.
+
+```bash
 bash scripts/pipeline-run.sh
 ```
 
-### 4. Open the app
+### 5. Open the app
 
 [http://localhost:3000](http://localhost:3000)
 
@@ -60,16 +74,19 @@ re-lore-oracle/
 ├── docker-compose.yml          # Runtime: neo4j, qdrant, clip-service, api, frontend
 ├── pipeline/
 │   ├── docker-compose.yml      # Offline pipeline: scraper, ingestor
+│   ├── .env.example
 │   ├── scraper/                # Async wiki scraper → markdown corpus + images
 │   └── ingestor/               # Markdown → Neo4j graph + Qdrant vector collections
 ├── runtime/
+│   ├── base/                   # Shared base Docker image (torch + heavy deps)
 │   ├── api/                    # FastAPI + LangGraph RAG pipeline
 │   ├── clip-service/           # Isolated OpenCLIP embedding microservice
 │   └── frontend/               # React + Vite + Tailwind chat UI
 ├── data/
-│   ├── raw/                    # Scraped markdown + images (gitignored)
-│   └── processed/              # Chunked data (gitignored)
-├── docs/                       # Architecture and API contract
+│   ├── raw/                    # Scraped markdown + images + manifests (gitignored)
+│   ├── state/                  # Ingestor checkpoints (gitignored)
+│   └── logs/                   # Runtime log files (gitignored)
+├── docs/                       # Architecture, data model, API contract, development guide
 └── scripts/                    # Shell helpers
 ```
 
@@ -77,102 +94,66 @@ re-lore-oracle/
 
 ## LangGraph Pipeline
 
-Every query runs through a typed `StateGraph`:
+Every query runs through a typed `StateGraph`. Graph retrieval and vector retrieval run in parallel; the reranker merges their candidates:
 
 ```
-START → classify_query → graph_retrieval → vector_retrieval
-          ↓ (needs_image_search=True)  → image_retrieval → assemble_evidence → generate_answer → END
-          ↓ (needs_image_search=False) ────────────────→ assemble_evidence → generate_answer → END
+START → classify_query ──┬──► graph_retrieval ──┐
+                         └──► vector_retrieval ──┴──► rerank
+                                                          │
+                                   needs_image_search=True├──► image_retrieval ──► assemble_evidence
+                                   needs_image_search=False└──► (skip)  ─────────► assemble_evidence
+                                                                                          │
+                                                                                   generate_answer → END
 ```
 
-- **`classify_query`** — extracts entity hints (capitalised words) and sets `needs_image_search` via keyword match
+- **`classify_query`** — regex entity extraction (title-case, ALL-CAPS, dotted, hyphenated patterns + known aliases); sets `needs_image_search`
 - **`graph_retrieval`** — APOC 2-hop Cypher traversal on Neo4j using entity hints
-- **`vector_retrieval`** — embeds query with sentence-transformers, searches `lore_text` collection (top-5)
-- **`image_retrieval`** — CLIP text embed → filtered `concept_art` search, restricted to entities already found by vector retrieval (prevents wrong-character images)
-- **`assemble_evidence`** — merges results, deduplicates by (entity_id, section), filters sparse sections, includes image captions
+- **`vector_retrieval`** — hybrid BM25 + dense search on Qdrant `lore_text`, top-15 candidates
+- **`rerank`** — cross-encoder scores all candidates, applies 0.3 threshold, keeps top-3
+- **`image_retrieval`** — CLIP text embed → filtered `concept_art` search, restricted to entity_ids from text results
+- **`assemble_evidence`** — merges results, deduplicates by (entity_id, section), filters sparse sections
 - **`generate_answer`** — streams tokens via ChatGroq SSE
 
 ---
 
 ## Scripts
 
-| Script | Purpose |
-|---|---|
-| `scripts/runtime-up.sh` | Build and start all runtime services |
-| `scripts/pipeline-run.sh` | Run scraper then ingestor |
-| `scripts/reset-db.sh` | Wipe Neo4j and Qdrant volumes |
-| `scripts/dev-up.sh` | Pipeline + runtime in one command |
-| `scripts/export-snapshots.sh` | Export Neo4j dump and Qdrant snapshot |
+| Script                                    | Purpose                                           |
+| ----------------------------------------- | ------------------------------------------------- |
+| `scripts/build-base.sh [cpu\|cuda\|auto]` | Build the shared `re-lore-base` Docker image      |
+| `scripts/push-base.sh`                    | Push `re-lore-base` to GHCR for teammates to pull |
+| `scripts/runtime-up.sh`                   | Build and start all runtime services              |
+| `scripts/pipeline-run.sh`                 | Run scraper then ingestor                         |
+| `scripts/reset-db.sh`                     | Wipe Neo4j and Qdrant volumes                     |
+| `scripts/dev-up.sh`                       | Pipeline + runtime in one command                 |
+| `scripts/export-snapshots.sh`             | Export Neo4j dump and Qdrant snapshot             |
 
 ---
 
 ## Demo Queries
 
 **Triggers image search (concept art shown):**
-- *"What does Jill Valentine look like across different games?"*
-- *"Show me concept art of Nemesis"*
-- *"Show me images of Ada Wong"*
+
+- _"What does Jill Valentine look like across different games?"_
+- _"Show me concept art of Nemesis"_
+- _"Show me images of Ada Wong"_
 
 **Text-only lore:**
-- *"Who is connected to Umbrella through direct employment and outbreak events?"*
-- *"Which games connect Leon S. Kennedy and Ada Wong?"*
-- *"What enemies are related to Tyrant lineage?"*
+
+- _"Who is connected to Umbrella through direct employment and outbreak events?"_
+- _"Which games connect Leon S. Kennedy and Ada Wong?"_
+- _"What enemies are related to Tyrant lineage?"_
 
 ---
 
 ## Development
 
-See [docs/architecture.md](docs/architecture.md) and [docs/api-contract.md](docs/api-contract.md).
+See [docs/architecture.md](docs/architecture.md) for system design and technology rationale, [docs/development.md](docs/development.md) for commands and contributor workflow, and [docs/api-contract.md](docs/api-contract.md) for the API specification.
 
 Branch strategy: feature branches → `develop` → `main` via PR.
 
-### Environment notes
-
-- **GROQ_MODEL** — `llama-3.3-70b-versatile` (llama3-70b-8192 was decommissioned by Groq)
-- **Two `.env` files** — `.env` for runtime, `pipeline/.env` for pipeline (both need the same `NEO4J_PASSWORD`)
-- **Pipeline uses `network_mode: host`** — so it can reach runtime services on `localhost`; does not share a Docker network with the runtime stack
-- **Ingestor checkpoints** live at `data/state/`. If a database volume is wiped, delete the relevant checkpoint file and re-run the ingestor to re-populate.
-
 ---
 
-## Docker Reference
+## Docker Storage Note
 
-### Useful commands
-
-```bash
-# Rebuild a single service after code or dependency changes
-docker compose build api
-docker compose -f pipeline/docker-compose.yml build scraper
-
-# Tail logs for a running service
-docker compose logs -f api
-
-# Wipe Neo4j and Qdrant volumes (data only — does not remove images)
-bash scripts/reset-db.sh
-
-# Run a quick scraper smoke test (games only, 20 pages)
-docker compose -f pipeline/docker-compose.yml run --rm \
-  -e SCRAPE_TARGET=games \
-  -e MAX_PAGES=20 \
-  scraper
-```
-
-### Storage management (Fedora Linux + Docker Desktop)
-
-Docker Desktop stores all layers inside a virtual disk image (`~/.docker/desktop/vms/0/data/Docker.raw`). This file grows on every build but **never shrinks automatically** — even after `docker system prune`. Over many rebuilds this will fill your disk.
-
-**After each build session — prune dangling intermediate layers:**
-```bash
-docker image prune -f
-```
-
-**When you feel disk pressure — reclaim space from the VM disk:**
-```bash
-docker system prune -a --volumes   # clear everything unused first
-# Then: Docker Desktop → Settings → Resources → Reclaim space
-```
-
-**Prevent unbounded growth — set a disk size cap:**
-Docker Desktop → Settings → Resources → Virtual disk limit → ~40 GB
-
-Full details and troubleshooting in [docs/docker-storage-and-builds.md](docs/docker-storage-and-builds.md).
+Docker Desktop stores all image layers in a virtual disk file that grows on every build but never shrinks automatically. After repeated rebuilds this can fill your disk. See [docs/docker-storage-and-builds.md](docs/docker-storage-and-builds.md) for the fix and routine habits to prevent unbounded growth.
