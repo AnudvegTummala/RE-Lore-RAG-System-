@@ -102,6 +102,9 @@ class ImageManifest:
         entity_id: str,
         entity_type: str,
         alt_text: str = "",
+        caption: str = "",
+        section: str = "",
+        tags: list[str] | None = None,
         category_folder: str | None = None,
     ) -> None:
         """Record an image reference without overwriting download results."""
@@ -115,6 +118,9 @@ class ImageManifest:
             entry["entity_id"] = entity_id
             entry["entity_type"] = entity_type
             entry["alt_text"] = alt_text
+            entry["caption"] = caption
+            entry["section"] = section
+            entry["tags"] = tags or []
             if category_folder:
                 entry["category_folder"] = category_folder
             entry.setdefault("first_seen_at", _now())

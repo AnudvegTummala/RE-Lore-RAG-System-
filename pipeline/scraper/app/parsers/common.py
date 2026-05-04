@@ -176,6 +176,7 @@ def _extract_body_and_images(
     seen_image_urls: set[str] = set()
     img_idx = 0
     skip_until_next_h2 = False
+    current_section = "Infobox"
 
     if not parser_output:
         return sections, images
@@ -184,10 +185,12 @@ def _extract_body_and_images(
     aside = soup.select_one("aside.portable-infobox")
     if aside:
         for img in aside.find_all("img"):
-            entry = _make_image_entry(img, entity_slug, img_idx, seen_image_urls)
+            entry = _make_image_entry(img, entity_slug, img_idx, seen_image_urls, current_section)
             if entry:
                 images.append(entry)
                 img_idx += 1
+
+    current_section = "Summary"
 
     for element in parser_output.find_all(recursive=False):
         if not isinstance(element, Tag):
@@ -210,6 +213,7 @@ def _extract_body_and_images(
             if skip_until_next_h2 and name != "h2":
                 continue
             skip_until_next_h2 = False
+            current_section = heading_text
             sections.append({"name": heading_text, "content": ""})
             continue
 
@@ -248,7 +252,7 @@ def _extract_body_and_images(
         # any nested <img> descendants.
         img_elements = [element] if name == "img" else element.find_all("img")
         for img in img_elements:
-            entry = _make_image_entry(img, entity_slug, img_idx, seen_image_urls)
+            entry = _make_image_entry(img, entity_slug, img_idx, seen_image_urls, current_section)
             if entry:
                 images.append(entry)
                 img_idx += 1
@@ -256,11 +260,39 @@ def _extract_body_and_images(
     return sections, images
 
 
+def _extract_caption(img: Tag) -> str:
+    """Walk up from an <img> to find a Fandom/MediaWiki figure caption.
+
+    Checks (in order):
+    1. <figcaption> sibling or ancestor
+    2. .thumbcaption inside the nearest .thumbinner wrapper
+    3. .caption class anywhere in the nearest figure-like ancestor
+    """
+    # Walk up at most 5 levels to find a caption container.
+    node = img.parent
+    for _ in range(5):
+        if node is None:
+            break
+        if node.name == "figure":
+            figcaption = node.find("figcaption")
+            if figcaption:
+                return clean_wiki_text(figcaption.get_text(separator=" "))
+        thumbcaption = node.find(class_="thumbcaption")
+        if thumbcaption:
+            return clean_wiki_text(thumbcaption.get_text(separator=" "))
+        caption_el = node.find(class_="caption")
+        if caption_el:
+            return clean_wiki_text(caption_el.get_text(separator=" "))
+        node = node.parent
+    return ""
+
+
 def _make_image_entry(
     img: Tag,
     entity_slug: str,
     idx: int,
     seen_urls: set[str],
+    section: str = "",
 ) -> dict | None:
     src = img.get("data-src") or img.get("src") or ""
     if not src or is_ui_image(src):
@@ -270,11 +302,14 @@ def _make_image_entry(
         return None
     seen_urls.add(src)
     alt = clean_wiki_text(img.get("alt", "") or "")
+    caption = _extract_caption(img)
     image_id = f"{entity_slug}-img-{idx + 1:02d}"
     return {
         "image_id": image_id,
         "source_url": src,
         "alt_text": alt,
+        "caption": caption,
+        "section": section,
         "is_concept_art": _looks_like_concept_art(src, alt),
     }
 

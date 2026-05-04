@@ -5,12 +5,9 @@ from app.services.neo4j_service import neo4j_service
 
 logger = logging.getLogger(__name__)
 
-# Ingestor stores entity names as `title` (not `name`). Match on both to be safe.
 _CYPHER = """
 MATCH (e)
-WHERE any(hint IN $hints WHERE
-    toLower(coalesce(e.title, '')) CONTAINS toLower(hint) OR
-    toLower(coalesce(e.name,  '')) CONTAINS toLower(hint))
+WHERE any(hint IN $hints WHERE toLower(coalesce(e.title, '')) CONTAINS toLower(hint))
 WITH e LIMIT 5
 CALL apoc.path.subgraphAll(e, {maxLevel: 2, limit: 50}) YIELD nodes, relationships
 RETURN nodes, relationships
@@ -20,11 +17,13 @@ RETURN nodes, relationships
 async def graph_retrieval(state: GraphState) -> GraphState:
     hints = state.get("entity_hints", [])
     if not hints:
-        return {**state, "graph_results": []}
+        logger.info("graph_retrieval: no hints, skipped")
+        return {"graph_results": []}
 
     try:
         records = await neo4j_service.run(_CYPHER, hints=hints)
-        return {**state, "graph_results": records}
+        logger.info("graph_retrieval: %d hints → %d records", len(hints), len(records))
+        return {"graph_results": records}
     except Exception:
         logger.exception("graph_retrieval failed")
-        return {**state, "graph_results": []}
+        return {"graph_results": []}

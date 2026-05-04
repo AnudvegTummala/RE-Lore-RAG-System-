@@ -20,7 +20,7 @@ services:
       start_period: 40s
 
   qdrant:
-    image: qdrant/qdrant:v1.9.2
+    image: qdrant/qdrant:v1.11.5
     ports:
       - "6333:6333"
     volumes:
@@ -38,6 +38,11 @@ services:
     build:
       context: ./runtime/clip-service
       dockerfile: Dockerfile
+      args:
+        TORCH_DEVICE: ${TORCH_DEVICE:-auto}
+    # Pre-built image from GHCR (used when available, skips local build).
+    # Pull with: docker pull ghcr.io/mhamdashfaque/re-lore-base:latest
+    image: ghcr.io/mhamdashfaque/re-lore-clip-service:latest
     ports:
       - "8001:8001"
     environment:
@@ -56,6 +61,11 @@ services:
     build:
       context: ./runtime/api
       dockerfile: Dockerfile
+      args:
+        TORCH_DEVICE: ${TORCH_DEVICE:-auto}
+    # Pre-built image from GHCR (used when available, skips local build).
+    # Pull with: docker pull ghcr.io/mhamdashfaque/re-lore-api:latest
+    image: ghcr.io/mhamdashfaque/re-lore-api:latest
     ports:
       - "8000:8000"
     environment:
@@ -65,8 +75,10 @@ services:
       QDRANT_URL: "http://qdrant:6333"
       CLIP_SERVICE_URL: "http://clip-service:8001"
       GROQ_API_KEY: "${GROQ_API_KEY}"
-      GROQ_MODEL: "${GROQ_MODEL:-llama3-70b-8192}"
+      GROQ_MODEL: "${GROQ_MODEL:-llama-3.3-70b-versatile}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      OMP_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
     depends_on:
       neo4j:
         condition: service_healthy
@@ -76,6 +88,7 @@ services:
         condition: service_healthy
     volumes:
       - ./data:/data:ro
+      - ./data/logs:/data/logs
     networks:
       - re-lore-net
     healthcheck:

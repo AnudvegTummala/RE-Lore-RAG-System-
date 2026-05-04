@@ -11,9 +11,10 @@ async def vector_retrieval(state: GraphState) -> GraphState:
         results = await qdrant_service.search_text(
             query=state["query"],
             collection="lore_text",
-            limit=5,
+            limit=15,
         )
-        return {**state, "text_results": results}
+        logger.info("vector_retrieval: %d candidates returned", len(results))
+        return {"text_results": results}
     except Exception:
         logger.exception("vector_retrieval failed")
-        return {**state, "text_results": []}
+        return {"text_results": []}
