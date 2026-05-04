@@ -7,9 +7,11 @@ logger = logging.getLogger(__name__)
 
 _CYPHER = """
 MATCH (e)
-WHERE any(hint IN $hints WHERE toLower(coalesce(e.title, '')) CONTAINS toLower(hint))
+WHERE any(hint IN $hints WHERE
+    toLower(coalesce(e.title, '')) CONTAINS toLower(hint) OR
+    toLower(coalesce(e.name,  '')) CONTAINS toLower(hint))
 WITH e LIMIT 5
-CALL apoc.path.subgraphAll(e, {maxLevel: 2, limit: 50}) YIELD nodes, relationships
+CALL apoc.path.subgraphAll(e, {maxLevel: 1, limit: 30}) YIELD nodes, relationships
 RETURN nodes, relationships
 """
 
