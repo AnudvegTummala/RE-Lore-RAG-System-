@@ -50,14 +50,25 @@ def assemble_evidence(state: GraphState) -> GraphState:
 
     image_results = state.get("image_results", [])
     if image_results:
-        captions = [
-            f"- {r.get('caption') or r.get('image_id', '?')} (entity: {r.get('entity_id', '?')})"
-            for r in image_results
-        ]
+        img_lines: list[str] = []
+        for r in image_results:
+            description = r.get("alt_text") or r.get("caption") or ""
+            label = r.get("image_id", "?")
+            entity = r.get("entity_id", "?")
+            section = r.get("section", "")
+            line = f"- [{label}]"
+            if description:
+                line += f" {description}"
+            line += f" (entity: {entity}"
+            if section:
+                line += f", section: {section}"
+            line += ")"
+            img_lines.append(line)
         parts.append(
             "## Concept Art Found\n"
-            "The following concept art images are being displayed to the user alongside this answer:\n"
-            + "\n".join(captions)
+            "The following concept art images are displayed to the user. "
+            "Use the descriptions to answer visual appearance questions:\n"
+            + "\n".join(img_lines)
         )
 
     evidence = "\n\n".join(parts) if parts else "No relevant lore found."

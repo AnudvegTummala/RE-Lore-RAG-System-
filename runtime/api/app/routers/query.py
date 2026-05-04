@@ -144,6 +144,12 @@ def _serialise_graph(graph_results: list, text_results: list | None = None) -> d
                 "entity_type": et,
             })
 
+    _MAX_NODES = 60
+    if len(nodes) > _MAX_NODES:
+        nodes = nodes[:_MAX_NODES]
+        keep = {n["id"] for n in nodes}
+        edges = [e for e in edges if e["source"] in keep and e["target"] in keep]
+
     return {"nodes": nodes, "edges": edges}
 
 
