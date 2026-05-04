@@ -14,7 +14,7 @@ async def vector_retrieval(state: GraphState) -> GraphState:
             limit=15,
         )
         logger.info("vector_retrieval: %d candidates returned", len(results))
-        return {**state, "text_results": results}
+        return {"text_results": results}
     except Exception:
         logger.exception("vector_retrieval failed")
-        return {**state, "text_results": []}
+        return {"text_results": []}
