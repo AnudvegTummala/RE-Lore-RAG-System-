@@ -1,15 +1,11 @@
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1
+FROM re-lore-base
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget \
-    libgl1 \
-    libglib2.0-0t64 \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 COPY app/ ./app/
 

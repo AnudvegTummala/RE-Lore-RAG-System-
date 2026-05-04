@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+import torch
 from sentence_transformers import CrossEncoder
 
 from app.core.config import settings
@@ -9,6 +10,10 @@ from app.graph.state import GraphState
 logger = logging.getLogger(__name__)
 
 _TOP_K = 3
+
+# Prevent PyTorch from spawning excessive CPU threads inside the container,
+# which causes deadlocks when predict() runs in the asyncio thread pool.
+torch.set_num_threads(1)
 
 _cross_encoder = CrossEncoder(settings.reranker_model)
 

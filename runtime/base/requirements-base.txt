@@ -1,0 +1,5 @@
+# Heavy ML deps shared by api and clip-service.
+# torch itself is installed separately in the Dockerfile via device detection.
+open-clip-torch==2.26.1
+sentence-transformers==3.1.1
+fastembed==0.4.2
