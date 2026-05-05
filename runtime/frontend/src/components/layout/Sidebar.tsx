@@ -17,19 +17,19 @@ export default function Sidebar({ onSelect }: SidebarProps) {
   const lastUserQuery = [...messages].reverse().find((m) => m.role === 'user')?.content
 
   return (
-    <aside className="w-64 border-r border-re-border bg-re-surface flex flex-col shrink-0">
-      <div className="p-4">
-        <p className="text-xs text-re-muted uppercase tracking-wider mb-3 font-mono">Demo Queries</p>
-        <ul className="space-y-1">
+    <aside className="w-64 border-r border-re-border bg-re-surface-2 bg-opacity-40 flex flex-col shrink-0">
+      <div className="p-4 flex flex-col h-full">
+        <p className="text-base text-re-red-bright uppercase tracking-wider mb-3 font-mono font-bold text-center">Demo Queries</p>
+        <ul className="space-y-2 flex flex-col justify-around flex-1">
           {DEMO_QUERIES.map((q) => (
             <li key={q}>
               <button
                 onClick={() => onSelect?.(q)}
                 disabled={isStreaming}
-                className={`w-full text-left text-xs px-3 py-2 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                className={`w-full text-left text-xs px-3 py-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-black ${
                   lastUserQuery === q
-                    ? 'bg-re-surface-2 border border-re-red text-white'
-                    : 'text-re-text hover:bg-re-surface-2 hover:text-white border border-transparent'
+                    ? 'border border-re-red text-white'
+                    : 'text-re-text hover:text-white border border-transparent'
                 }`}
               >
                 {q}

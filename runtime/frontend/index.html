@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RE Lore Oracle</title>
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -11,8 +12,16 @@
       rel="stylesheet"
     />
   </head>
-  <body class="bg-re-dark text-re-text">
+
+  <body class="text-re-text">
+    <!-- Background Video -->
+    <video autoplay muted loop playsinline id="bg-video">
+      <source src="bg-video.mp4" type="video/mp4" />
+    </video>
+
+    <!-- React App -->
     <div id="root"></div>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -10,7 +10,7 @@ export default function Shell() {
   const { sendQuery } = useStreaming()
 
   return (
-    <div className="flex flex-col h-full bg-re-dark text-re-text">
+    <div className="flex flex-col h-full text-re-text">
       <Header />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar onSelect={sendQuery} />
