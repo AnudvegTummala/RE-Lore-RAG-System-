@@ -38,7 +38,7 @@ export default function GraphViewer() {
             'background-color': (ele) =>
               ENTITY_COLORS[ele.data('labels')?.[0]] ?? '#7f8c8d',
             label: 'data(name)',
-            color: '#1a1a1a',
+            color: '#f0f0f0',
             'font-size': 10,
             'font-weight': 600,
             'text-valign': 'bottom',
@@ -60,7 +60,7 @@ export default function GraphViewer() {
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             label: 'data(type)',
-            color: '#555',
+            color: '#aaaaaa',
             'font-size': 8,
             width: 1.5,
           },
