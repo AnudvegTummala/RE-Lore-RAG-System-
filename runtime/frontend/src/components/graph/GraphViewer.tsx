@@ -38,13 +38,13 @@ export default function GraphViewer() {
             'background-color': (ele) =>
               ENTITY_COLORS[ele.data('labels')?.[0]] ?? '#7f8c8d',
             label: 'data(name)',
-            color: '#1a1a1a',
+            color: '#f0f0f0',
             'font-size': 10,
             'font-weight': 600,
             'text-valign': 'bottom',
             'text-margin-y': 5,
-            'text-background-color': '#ffffff',
-            'text-background-opacity': 0.75,
+            'text-background-color': '#2a2a2a',
+            'text-background-opacity': 0.85,
             'text-background-padding': '2px',
             width: 32,
             height: 32,
@@ -60,7 +60,7 @@ export default function GraphViewer() {
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             label: 'data(type)',
-            color: '#555',
+            color: '#aaaaaa',
             'font-size': 8,
             width: 1.5,
           },
@@ -106,12 +106,12 @@ export default function GraphViewer() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ padding: '12px', borderBottom: '1px solid #e0e0e0', flexShrink: 0, background: '#f8f8f8' }}>
-        <p style={{ fontSize: '11px', color: '#555', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0, fontWeight: 600 }}>
+      <div style={{ padding: '12px', borderBottom: '1px solid #2a2a2a', flexShrink: 0, background: 'rgba(17, 24, 39, 0.6)' }}>
+        <p style={{ fontSize: '11px', color: '#d4d4d4', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0, fontWeight: 600 }}>
           Knowledge Graph{nodeCount > 0 ? ` · ${nodeCount} nodes` : ''}
         </p>
       </div>
-      <div ref={containerRef} style={{ flex: 1, minHeight: 0, background: '#f0f0f0' }} />
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, background: '#2a2a2a' }} />
       <GraphLegend />
       {selectedNode && <NodeDetails nodeId={selectedNode} />}
     </div>
